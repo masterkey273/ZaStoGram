@@ -1207,21 +1207,10 @@ void ConnectionSocket::onEvent(uint32_t events) {
                         memcpy(tempBuffer->bytes + 11, tempBuffer->bytes + 64 * 1024, 32);
                         bytesRead = 0;
 
-                        // Fragment the ClientHello across TCP segments so a DPI that extracts JA4
-                        // from a single packet cannot see the cipher/extension list. The first
-                        // segment is cut before cipher_suites (offset ~76). TCP_NODELAY (set above)
-                        // makes each send() its own segment; post-handshake data is unaffected.
-                        uint32_t firstCut = 24 + secureRandomBounded(40); // 24..63, before cipher_suites
-                        uint32_t sentHello = 0;
-                        while (sentHello < size) {
-                            uint32_t want = (sentHello == 0 && firstCut < size) ? firstCut : (size - sentHello);
-                            ssize_t w = send(socketFd, tempBuffer->bytes + sentHello, want, 0);
-                            if (w <= 0) {
-                                if (LOGS_ENABLED) DEBUG_E("connection(%p) send failed", this);
-                                closeSocket(1, -1);
-                                return;
-                            }
-                            sentHello += (uint32_t) w;
+                        if (send(socketFd, tempBuffer->bytes, size, 0) < 0) {
+                            if (LOGS_ENABLED) DEBUG_E("connection(%p) send failed", this);
+                            closeSocket(1, -1);
+                            return;
                         }
                         adjustWriteOp();
                     }
