@@ -739,6 +739,11 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
         items.add(SettingCell.Factory.of(18, IconBackgroundColors.BLUE_LIGHT.top, IconBackgroundColors.BLUE_LIGHT.bottom, R.drawable.settings_faq, getString(R.string.TelegramFAQ)));
         items.add(SettingCell.Factory.of(23, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_features, getString(R.string.TelegramFeatures)));
         items.add(SettingCell.Factory.of(19, IconBackgroundColors.GREEN.top, IconBackgroundColors.GREEN.bottom, R.drawable.settings_policy, getString(R.string.PrivacyPolicy)));
+        items.add(UItem.asShadow(null));
+        items.add(UItem.asHeader(getString(R.string.DurovLalka)));
+        items.add(SettingCell.Factory.of(24, IconBackgroundColors.BLUE.top, IconBackgroundColors.BLUE.bottom, R.drawable.settings_channel, getString(R.string.OurChannel)));
+        items.add(SettingCell.Factory.of(25, IconBackgroundColors.GREEN.top, IconBackgroundColors.GREEN.bottom, R.drawable.settings_privacy, getString(R.string.OurVpn)));
+        items.add(SettingCell.Factory.of(26, IconBackgroundColors.ORANGE_DEEP.top, IconBackgroundColors.ORANGE_DEEP.bottom, R.drawable.settings_gift, getString(R.string.DonateAndSupport)));
 
         if (BuildVars.LOGS_ENABLED || BuildVars.DEBUG_PRIVATE_VERSION) {
             items.add(UItem.asShadow(null));
@@ -859,6 +864,15 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
                 break;
             case 19:
                 Browser.openUrl(getParentActivity(), LocaleController.getString(R.string.PrivacyPolicyUrl));
+                break;
+            case 24:
+                Browser.openUrl(getParentActivity(), "https://t.me/bypassblock");
+                break;
+            case 25:
+                Browser.openUrl(getParentActivity(), "https://t.me/vpndiscordyooutube");
+                break;
+            case 26:
+                Browser.openUrl(getParentActivity(), "https://t.me/zapretvpns_bot");
                 break;
 
             case 20:

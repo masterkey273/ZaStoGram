@@ -35,6 +35,7 @@ public:
     void dropConnection();
     void setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, int32_t mtProxyTlsProfile);
     void onHostNameResolved(std::string host, std::string ip, bool ipv6);
+    void setMtProxyHandshakePriority(int32_t priority);
 
 protected:
     int32_t instanceNum;
@@ -88,19 +89,30 @@ private:
     int8_t tlsState = 0;
 
     uint8_t proxyAuthState = 0;
-    Timer *proxyPacingTimer = nullptr;
-    bool proxyPacingScheduled = false;
-    bool proxyPacingReady = false;
-    bool proxyPacingIpv6 = false;
+    Timer *proxyHandshakeAdmissionTimer = nullptr;
+    bool proxyHandshakeAdmissionQueued = false;
+    bool proxyHandshakeAdmissionActive = false;
+    bool proxyHandshakeAdmissionReady = false;
+    bool proxyHandshakeAdmissionIpv6 = false;
     bool mtproxySocketConnectedLogged = false;
-    uint32_t proxyPacingGeneration = 0;
+    uint32_t proxyHandshakeAdmissionGeneration = 0;
+    int32_t proxyHandshakeAdmissionPriority = 0;
+    int32_t proxyHandshakeAdmissionTimerMode = 0;
+    int64_t proxyHandshakeAdmissionStartTime = 0;
+    int64_t proxyHandshakeClientHelloSentTime = 0;
+    std::string proxyHandshakeAdmissionKey;
 
     int32_t checkSocketError(int32_t *error);
     void closeSocket(int32_t reason, int32_t error);
     void openConnectionInternal(bool ipv6);
     void adjustWriteOp();
-    bool scheduleProxyPacingIfNeeded(bool ipv6);
-    void cancelProxyPacing();
+    bool scheduleProxyHandshakeAdmissionIfNeeded(bool ipv6);
+    void scheduleProxyHandshakeAdmissionTimer(uint32_t delay, int32_t mode, bool ipv6);
+    void grantProxyHandshakeAdmission(bool ipv6, uint32_t generation, uint32_t delay, const char *reason);
+    void cancelProxyHandshakeAdmission();
+    void releaseProxyHandshakeAdmission(bool succeeded, const char *reason);
+    void markProxyHandshakeClientHelloSent();
+    void markProxyHandshakeFreezeIfNeeded();
     void clearPendingTlsFrame();
     bool buildPendingTlsFrame(NativeByteBuffer *buffer, uint32_t remaining);
     bool sendPendingTlsFrame();

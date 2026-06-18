@@ -2330,6 +2330,10 @@
     <string name="ResetCustomNotificationsAlert">Are you sure you want to reset notification settings to default?</string>
     <string name="TextSizeHeader">Message text size</string>
     <string name="AskAQuestion">Ask a Question</string>
+    <string name="DurovLalka">Дуров лалка</string>
+    <string name="OurChannel">Наш канал</string>
+    <string name="OurVpn">Наш VPN</string>
+    <string name="DonateAndSupport">Донаты &amp; поддержать</string>
     <string name="QuizExplanationTitle">Explanation</string>
     <string name="AddAnExplanationHeader">Explanation</string>
     <string name="AddAnExplanation">Add an explanation</string>

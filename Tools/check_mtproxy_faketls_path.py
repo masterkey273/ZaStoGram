@@ -3,9 +3,9 @@
 
 The working reference is tsrman/tg commit 9fe18931 for the risky transport
 parts: whole ClientHello send and the original fixed TLS record cap for wrapped
-data. ZaStoGram adds a sticky FakeTLS profile selector, nonblocking startup
-pacing, startup diagnostics, and a TLS write queue so MTProto payload bytes are
-not discarded until the full TLS record has been sent.
+data. ZaStoGram adds a sticky FakeTLS profile selector, a nonblocking
+endpoint-level startup scheduler, startup diagnostics, and a TLS write queue so
+MTProto payload bytes are not discarded until the full TLS record has been sent.
 """
 
 from pathlib import Path
@@ -16,6 +16,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 CPP = ROOT / "TMessagesProj/jni/tgnet/ConnectionSocket.cpp"
 HDR = ROOT / "TMessagesProj/jni/tgnet/ConnectionSocket.h"
+CONNECTION_CPP = ROOT / "TMessagesProj/jni/tgnet/Connection.cpp"
 PROXY_CHECK_HDR = ROOT / "TMessagesProj/jni/tgnet/ProxyCheckInfo.h"
 CM_JAVA = ROOT / "TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java"
 CM_CPP = ROOT / "TMessagesProj/jni/tgnet/ConnectionsManager.cpp"
@@ -26,6 +27,7 @@ WRAPPER = ROOT / "TMessagesProj/jni/TgNetWrapper.cpp"
 def main() -> int:
     cpp = CPP.read_text(encoding="utf-8")
     header = HDR.read_text(encoding="utf-8")
+    connection_cpp = CONNECTION_CPP.read_text(encoding="utf-8")
     proxy_check_header = PROXY_CHECK_HDR.read_text(encoding="utf-8")
     java = CM_JAVA.read_text(encoding="utf-8")
     manager_cpp = CM_CPP.read_text(encoding="utf-8")
@@ -141,18 +143,50 @@ def main() -> int:
     )
     require(
         "nanosleep(&ts, nullptr);" not in cpp,
-        "proxy pacing must not block the network thread",
+        "proxy startup scheduling must not block the network thread",
     )
     require(
-        "scheduleProxyPacingIfNeeded" in combined
-        and "cancelProxyPacing" in combined
-        and "Timer *proxyPacingTimer" in header
+        "scheduleProxyHandshakeAdmissionIfNeeded" in combined
+        and "cancelProxyHandshakeAdmission" in combined
+        and "Timer *proxyHandshakeAdmissionTimer" in header
         and '#include "Timer.h"' in cpp,
-        "proxy pacing must use a cancellable nonblocking Timer",
+        "proxy startup scheduling must use a cancellable nonblocking Timer",
     )
     require(
-        "queuedDelay" in cpp and "lastProxyConnectTime > now" in cpp,
-        "nonblocking pacing must stagger bursts against the last scheduled connect time",
+        "MtProxyHandshakeEndpointState" in cpp
+        and "proxyHandshakeSchedulerMutex" in cpp
+        and "activeHandshakes" in cpp
+        and "cooldownUntil" in cpp
+        and "queuedRequests" in cpp,
+        "FakeTLS startup must use an endpoint-level admission controller, not a single global jitter timestamp",
+    )
+    require(
+        "lastProxyConnectTime" not in cpp
+        and "proxyJitterMutex" not in cpp,
+        "old global jitter-only scheduler must stay out of the active FakeTLS path",
+    )
+    require(
+        "setMtProxyHandshakePriority" in combined
+        and "mtProxyHandshakePriorityForConnectionType" in connection_cpp
+        and "ConnectionTypeGenericMedia" in connection_cpp
+        and "ConnectionTypeProxy" in connection_cpp,
+        "FakeTLS admission must receive MTProto connection priority before opening the socket",
+    )
+    require(
+        "releaseProxyHandshakeAdmission(true" in cpp
+        and "server_hello_hmac_ok" in cpp,
+        "FakeTLS admission slot must be released as soon as server_hello_hmac_ok is reached",
+    )
+    require(
+        "releaseProxyHandshakeAdmission(false" in cpp
+        and "closeSocket" in cpp,
+        "FakeTLS admission slot must be released on disconnect/error/timeout",
+    )
+    require(
+        "proxyHandshakeClientHelloSentTime" in combined
+        and "markProxyHandshakeClientHelloSent" in combined
+        and "freeze" in cpp.lower(),
+        "FakeTLS admission must record ClientHello time and apply freeze-aware cooldowns",
     )
     require(
         "pacingDeferred" not in combined,

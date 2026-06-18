@@ -20,7 +20,9 @@
 #include <openssl/hmac.h>
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <utility>
+#include <vector>
 #include <openssl/bn.h>
 #include "ByteStream.h"
 #include "ConnectionSocket.h"
@@ -35,14 +37,43 @@
 #include <random>
 #include <pthread.h>
 
-static pthread_mutex_t proxyJitterMutex = PTHREAD_MUTEX_INITIALIZER;
-static int64_t lastProxyConnectTime = 0;
+static pthread_mutex_t proxyHandshakeSchedulerMutex = PTHREAD_MUTEX_INITIALIZER;
 
 static constexpr int32_t MT_PROXY_TLS_PROFILE_FIREFOX = 1;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_ANDROID_CHROME = 2;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_YANDEX = 3;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID = 4;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_ANDROID_OKHTTP = 5;
+
+static constexpr int32_t MT_PROXY_HANDSHAKE_PRIORITY_GENERIC = 0;
+static constexpr int32_t MT_PROXY_HANDSHAKE_PRIORITY_MEDIA = 1;
+static constexpr int32_t MT_PROXY_HANDSHAKE_PRIORITY_PUSH = 2;
+static constexpr int32_t MT_PROXY_HANDSHAKE_PRIORITY_DOWNLOAD = 3;
+static constexpr int32_t MT_PROXY_HANDSHAKE_PRIORITY_UPLOAD = 4;
+static constexpr int32_t MT_PROXY_HANDSHAKE_PRIORITY_PROXY_CHECK = 5;
+
+static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_ADMISSION = 1;
+static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_FREEZE = 2;
+static constexpr int64_t MT_PROXY_HANDSHAKE_FREEZE_TIMEOUT_MS = 4500;
+
+struct MtProxyHandshakeQueuedRequest {
+    ConnectionSocket *socket = nullptr;
+    uint32_t generation = 0;
+    int32_t priority = MT_PROXY_HANDSHAKE_PRIORITY_PROXY_CHECK;
+    int64_t queuedAt = 0;
+    bool ipv6 = false;
+};
+
+struct MtProxyHandshakeEndpointState {
+    int32_t activeHandshakes = 0;
+    int32_t recentSuccesses = 0;
+    int32_t freezePenalty = 0;
+    int64_t lastSuccessTime = 0;
+    int64_t cooldownUntil = 0;
+    std::vector<MtProxyHandshakeQueuedRequest> queuedRequests;
+};
+
+static std::map<std::string, MtProxyHandshakeEndpointState> proxyHandshakeEndpoints;
 
 // Crypto-secure RNG for variable bytes inside the fake TLS profile: extension order and
 // ECH/padding lengths. Transport timing/data-path stays on the tsrman-proven code path.
@@ -63,6 +94,113 @@ static uint32_t secureRandomBounded(uint32_t bound) {
         v = secureRandomUint32();
     } while (v < threshold);
     return v % bound;
+}
+
+static uint32_t mtProxyHandshakeGrantDelay() {
+    return 90 + secureRandomBounded(161);
+}
+
+static uint32_t mtProxyHandshakeRetryDelay(int64_t now, int64_t cooldownUntil, int32_t priority) {
+    uint32_t baseDelay = priority <= MT_PROXY_HANDSHAKE_PRIORITY_MEDIA ? 180 : 420;
+    uint32_t delay = baseDelay + secureRandomBounded(priority <= MT_PROXY_HANDSHAKE_PRIORITY_MEDIA ? 181 : 421);
+    if (cooldownUntil > now) {
+        int64_t cooldownDelay = cooldownUntil - now;
+        if (cooldownDelay > 5000) {
+            cooldownDelay = 5000;
+        }
+        if ((int64_t) delay > cooldownDelay) {
+            delay = (uint32_t) cooldownDelay;
+        }
+    }
+    if (delay < 50) {
+        delay = 50;
+    }
+    return delay;
+}
+
+static int32_t mtProxyHandshakeActiveLimit(const MtProxyHandshakeEndpointState &state, int64_t now) {
+    if (state.cooldownUntil > now) {
+        return 1;
+    }
+    if (state.recentSuccesses >= 2 && now - state.lastSuccessTime < 120000) {
+        return 2;
+    }
+    return 1;
+}
+
+static bool mtProxyHandshakeHasHigherPriorityQueued(const MtProxyHandshakeEndpointState &state, int32_t priority) {
+    for (const auto &request : state.queuedRequests) {
+        if (request.priority < priority) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void mtProxyRemoveQueuedRequestLocked(ConnectionSocket *socket) {
+    for (auto &entry : proxyHandshakeEndpoints) {
+        auto &queue = entry.second.queuedRequests;
+        queue.erase(std::remove_if(queue.begin(), queue.end(), [socket](const MtProxyHandshakeQueuedRequest &request) {
+            return request.socket == socket;
+        }), queue.end());
+    }
+}
+
+static bool mtProxyTakeNextQueuedRequestLocked(const std::string &key, MtProxyHandshakeEndpointState &state, int64_t now, MtProxyHandshakeQueuedRequest &request) {
+    int32_t limit = mtProxyHandshakeActiveLimit(state, now);
+    if (state.activeHandshakes >= limit || state.queuedRequests.empty()) {
+        return false;
+    }
+
+    int bestIndex = -1;
+    for (int i = 0; i < (int) state.queuedRequests.size(); i++) {
+        const auto &candidate = state.queuedRequests[i];
+        if (state.cooldownUntil > now && candidate.priority > MT_PROXY_HANDSHAKE_PRIORITY_MEDIA) {
+            continue;
+        }
+        if (bestIndex < 0 || candidate.priority < state.queuedRequests[bestIndex].priority ||
+                (candidate.priority == state.queuedRequests[bestIndex].priority && candidate.queuedAt < state.queuedRequests[bestIndex].queuedAt)) {
+            bestIndex = i;
+        }
+    }
+    if (bestIndex < 0) {
+        return false;
+    }
+
+    request = state.queuedRequests[bestIndex];
+    state.queuedRequests.erase(state.queuedRequests.begin() + bestIndex);
+    state.activeHandshakes++;
+    if (LOGS_ENABLED) DEBUG_D("mtproxy_startup admission_dequeue key=%s active=%d queued=%d priority=%d", key.c_str(), state.activeHandshakes, (int) state.queuedRequests.size(), request.priority);
+    return true;
+}
+
+static void mtProxyApplyFreezeCooldown(MtProxyHandshakeEndpointState &state, int64_t now) {
+    if (state.freezePenalty < 3) {
+        state.freezePenalty++;
+    }
+    state.recentSuccesses = 0;
+    int64_t base;
+    if (state.freezePenalty <= 1) {
+        base = 30000;
+    } else if (state.freezePenalty == 2) {
+        base = 90000;
+    } else {
+        base = 180000;
+    }
+    state.cooldownUntil = now + base + secureRandomBounded(15001);
+}
+
+static void mtProxyRecordHandshakeSuccess(MtProxyHandshakeEndpointState &state, int64_t now) {
+    if (state.recentSuccesses < 4) {
+        state.recentSuccesses++;
+    }
+    state.lastSuccessTime = now;
+    if (state.freezePenalty > 0) {
+        state.freezePenalty--;
+    }
+    if (state.freezePenalty == 0) {
+        state.cooldownUntil = 0;
+    }
 }
 
 #ifndef EPOLLRDHUP
@@ -841,11 +979,11 @@ ConnectionSocket::ConnectionSocket(int32_t instance) {
 }
 
 ConnectionSocket::~ConnectionSocket() {
-    cancelProxyPacing();
+    cancelProxyHandshakeAdmission();
     clearPendingTlsFrame();
-    if (proxyPacingTimer != nullptr) {
-        delete proxyPacingTimer;
-        proxyPacingTimer = nullptr;
+    if (proxyHandshakeAdmissionTimer != nullptr) {
+        delete proxyHandshakeAdmissionTimer;
+        proxyHandshakeAdmissionTimer = nullptr;
     }
     if (outgoingByteStream != nullptr) {
         delete outgoingByteStream;
@@ -865,67 +1003,185 @@ ConnectionSocket::~ConnectionSocket() {
     }
 }
 
-bool ConnectionSocket::scheduleProxyPacingIfNeeded(bool ipv6) {
+bool ConnectionSocket::scheduleProxyHandshakeAdmissionIfNeeded(bool ipv6) {
     if (proxyAuthState < 10 || socketFd < 0) {
         return false;
     }
+    if (proxyHandshakeAdmissionReady) {
+        proxyHandshakeAdmissionReady = false;
+        return false;
+    }
+    if (proxyHandshakeAdmissionKey.empty()) {
+        proxyHandshakeAdmissionKey = currentAddress + ":" + std::to_string((unsigned int) currentPort) + ":" + currentSecretDomain;
+    }
 
     int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
-    int64_t elapsed;
-    int delay = 0;
-    pthread_mutex_lock(&proxyJitterMutex);
-    elapsed = now - lastProxyConnectTime;
-    if (elapsed < 450) {
-        int64_t queuedDelay = lastProxyConnectTime > now ? lastProxyConnectTime - now : 0;
-        delay = (int) queuedDelay + 90 + (int) secureRandomBounded(161); // +90..250 ms per burst
-        if (delay > 900) {
-            delay = 900;
-        }
-        lastProxyConnectTime = now + delay;
+    uint32_t delay = 0;
+    bool shouldQueue = false;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    mtProxyRemoveQueuedRequestLocked(this);
+    MtProxyHandshakeEndpointState &state = proxyHandshakeEndpoints[proxyHandshakeAdmissionKey];
+    int32_t limit = mtProxyHandshakeActiveLimit(state, now);
+    bool cooldownBlocks = state.cooldownUntil > now && proxyHandshakeAdmissionPriority > MT_PROXY_HANDSHAKE_PRIORITY_MEDIA;
+    if (cooldownBlocks || state.activeHandshakes >= limit || mtProxyHandshakeHasHigherPriorityQueued(state, proxyHandshakeAdmissionPriority)) {
+        MtProxyHandshakeQueuedRequest request;
+        request.socket = this;
+        request.generation = proxyHandshakeAdmissionGeneration;
+        request.priority = proxyHandshakeAdmissionPriority;
+        request.queuedAt = now;
+        request.ipv6 = ipv6;
+        state.queuedRequests.push_back(request);
+        shouldQueue = true;
+        delay = mtProxyHandshakeRetryDelay(now, state.cooldownUntil, proxyHandshakeAdmissionPriority);
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_queue key=%s priority=%d active=%d limit=%d queued=%d cooldown_ms=%ld retry=%u", this, proxyHandshakeAdmissionKey.c_str(), proxyHandshakeAdmissionPriority, state.activeHandshakes, limit, (int) state.queuedRequests.size(), (long) std::max<int64_t>(0, state.cooldownUntil - now), delay);
     } else {
-        lastProxyConnectTime = now;
+        state.activeHandshakes++;
+        proxyHandshakeAdmissionActive = true;
+        proxyHandshakeAdmissionQueued = false;
+        proxyHandshakeAdmissionStartTime = now;
+        proxyHandshakeClientHelloSentTime = 0;
+        if (state.activeHandshakes > 1) {
+            delay = mtProxyHandshakeGrantDelay();
+        }
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_grant key=%s priority=%d active=%d limit=%d delay=%u successes=%d", this, proxyHandshakeAdmissionKey.c_str(), proxyHandshakeAdmissionPriority, state.activeHandshakes, limit, delay, state.recentSuccesses);
     }
-    pthread_mutex_unlock(&proxyJitterMutex);
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
 
-    if (delay <= 0) {
-        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup pacing_no_delay elapsed=%ld", this, (long) elapsed);
+    if (shouldQueue) {
+        proxyHandshakeAdmissionQueued = true;
+        scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_ADMISSION, ipv6);
+        return true;
+    }
+    if (delay == 0) {
         return false;
     }
 
-    if (proxyPacingTimer == nullptr) {
-        proxyPacingTimer = new Timer(instanceNum, [this] {
-            if (proxyPacingTimer != nullptr) {
-                proxyPacingTimer->stop();
-            }
-            if (!proxyPacingScheduled || socketFd < 0) {
-                return;
-            }
-            proxyPacingScheduled = false;
-            proxyPacingReady = true;
-            bool delayedIpv6 = proxyPacingIpv6;
-            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup pacing_fire generation=%u", this, proxyPacingGeneration);
-            openConnectionInternal(delayedIpv6);
-        });
-    }
-
-    proxyPacingTimer->stop();
-    proxyPacingIpv6 = ipv6;
-    proxyPacingScheduled = true;
-    proxyPacingReady = false;
-    proxyPacingGeneration++;
-    proxyPacingTimer->setTimeout((uint32_t) delay, false);
-    proxyPacingTimer->start();
-    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup pacing_delay delay=%d elapsed=%ld generation=%u", this, delay, (long) elapsed, proxyPacingGeneration);
+    proxyHandshakeAdmissionReady = true;
+    scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_ADMISSION, ipv6);
     return true;
 }
 
-void ConnectionSocket::cancelProxyPacing() {
-    proxyPacingScheduled = false;
-    proxyPacingReady = false;
-    proxyPacingIpv6 = false;
-    proxyPacingGeneration++;
-    if (proxyPacingTimer != nullptr) {
-        proxyPacingTimer->stop();
+void ConnectionSocket::scheduleProxyHandshakeAdmissionTimer(uint32_t delay, int32_t mode, bool ipv6) {
+    if (proxyHandshakeAdmissionTimer == nullptr) {
+        proxyHandshakeAdmissionTimer = new Timer(instanceNum, [this] {
+            if (proxyHandshakeAdmissionTimer != nullptr) {
+                proxyHandshakeAdmissionTimer->stop();
+            }
+            int32_t mode = proxyHandshakeAdmissionTimerMode;
+            proxyHandshakeAdmissionTimerMode = 0;
+            if (socketFd < 0) {
+                return;
+            }
+            if (mode == MT_PROXY_HANDSHAKE_TIMER_FREEZE) {
+                markProxyHandshakeFreezeIfNeeded();
+                return;
+            }
+            if (mode == MT_PROXY_HANDSHAKE_TIMER_ADMISSION) {
+                bool delayedIpv6 = proxyHandshakeAdmissionIpv6;
+                if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_timer_fire generation=%u ready=%d queued=%d active=%d", this, proxyHandshakeAdmissionGeneration, proxyHandshakeAdmissionReady ? 1 : 0, proxyHandshakeAdmissionQueued ? 1 : 0, proxyHandshakeAdmissionActive ? 1 : 0);
+                openConnectionInternal(delayedIpv6);
+            }
+        });
+    }
+
+    proxyHandshakeAdmissionTimer->stop();
+    proxyHandshakeAdmissionIpv6 = ipv6;
+    proxyHandshakeAdmissionTimerMode = mode;
+    proxyHandshakeAdmissionTimer->setTimeout(delay, false);
+    proxyHandshakeAdmissionTimer->start();
+}
+
+void ConnectionSocket::grantProxyHandshakeAdmission(bool ipv6, uint32_t generation, uint32_t delay, const char *reason) {
+    if (generation != proxyHandshakeAdmissionGeneration || socketFd < 0 || proxyAuthState < 10) {
+        return;
+    }
+    proxyHandshakeAdmissionQueued = false;
+    proxyHandshakeAdmissionActive = true;
+    proxyHandshakeAdmissionReady = true;
+    proxyHandshakeAdmissionStartTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    proxyHandshakeClientHelloSentTime = 0;
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_grant_queued reason=%s key=%s priority=%d delay=%u", this, reason, proxyHandshakeAdmissionKey.c_str(), proxyHandshakeAdmissionPriority, delay);
+    scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_ADMISSION, ipv6);
+}
+
+void ConnectionSocket::cancelProxyHandshakeAdmission() {
+    if (proxyHandshakeAdmissionActive) {
+        releaseProxyHandshakeAdmission(false, "cancel");
+    }
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    mtProxyRemoveQueuedRequestLocked(this);
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    proxyHandshakeAdmissionQueued = false;
+    proxyHandshakeAdmissionActive = false;
+    proxyHandshakeAdmissionReady = false;
+    proxyHandshakeAdmissionIpv6 = false;
+    proxyHandshakeAdmissionTimerMode = 0;
+    proxyHandshakeAdmissionGeneration++;
+    proxyHandshakeAdmissionStartTime = 0;
+    proxyHandshakeClientHelloSentTime = 0;
+    proxyHandshakeAdmissionKey.clear();
+    if (proxyHandshakeAdmissionTimer != nullptr) {
+        proxyHandshakeAdmissionTimer->stop();
+    }
+}
+
+void ConnectionSocket::releaseProxyHandshakeAdmission(bool succeeded, const char *reason) {
+    if (proxyHandshakeAdmissionKey.empty()) {
+        proxyHandshakeAdmissionActive = false;
+        return;
+    }
+
+    MtProxyHandshakeQueuedRequest nextRequest;
+    bool hasNextRequest = false;
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    MtProxyHandshakeEndpointState &state = proxyHandshakeEndpoints[proxyHandshakeAdmissionKey];
+    mtProxyRemoveQueuedRequestLocked(this);
+    if (proxyHandshakeAdmissionActive && state.activeHandshakes > 0) {
+        state.activeHandshakes--;
+    }
+    if (succeeded) {
+        mtProxyRecordHandshakeSuccess(state, now);
+    } else if (proxyHandshakeAdmissionActive && proxyHandshakeClientHelloSentTime > 0) {
+        mtProxyApplyFreezeCooldown(state, now);
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_freeze_cooldown reason=%s key=%s penalty=%d cooldown_ms=%ld", this, reason, proxyHandshakeAdmissionKey.c_str(), state.freezePenalty, (long) std::max<int64_t>(0, state.cooldownUntil - now));
+    }
+    hasNextRequest = mtProxyTakeNextQueuedRequestLocked(proxyHandshakeAdmissionKey, state, now, nextRequest);
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+
+    proxyHandshakeAdmissionQueued = false;
+    proxyHandshakeAdmissionActive = false;
+    proxyHandshakeAdmissionReady = false;
+    proxyHandshakeAdmissionStartTime = 0;
+    proxyHandshakeClientHelloSentTime = 0;
+    proxyHandshakeAdmissionTimerMode = 0;
+    if (proxyHandshakeAdmissionTimer != nullptr) {
+        proxyHandshakeAdmissionTimer->stop();
+    }
+
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_release reason=%s success=%d key=%s next=%d", this, reason, succeeded ? 1 : 0, proxyHandshakeAdmissionKey.c_str(), hasNextRequest ? 1 : 0);
+    if (hasNextRequest && nextRequest.socket != nullptr) {
+        nextRequest.socket->grantProxyHandshakeAdmission(nextRequest.ipv6, nextRequest.generation, mtProxyHandshakeGrantDelay(), reason);
+    }
+}
+
+void ConnectionSocket::markProxyHandshakeClientHelloSent() {
+    if (!proxyHandshakeAdmissionActive || proxyHandshakeAdmissionKey.empty()) {
+        return;
+    }
+    proxyHandshakeClientHelloSentTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    scheduleProxyHandshakeAdmissionTimer((uint32_t) MT_PROXY_HANDSHAKE_FREEZE_TIMEOUT_MS, MT_PROXY_HANDSHAKE_TIMER_FREEZE, proxyHandshakeAdmissionIpv6);
+}
+
+void ConnectionSocket::markProxyHandshakeFreezeIfNeeded() {
+    if (!proxyHandshakeAdmissionActive || proxyHandshakeClientHelloSentTime == 0 || proxyAuthState != 11) {
+        return;
+    }
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    int64_t elapsed = now - proxyHandshakeClientHelloSentTime;
+    if (elapsed >= MT_PROXY_HANDSHAKE_FREEZE_TIMEOUT_MS) {
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_freeze_detected key=%s elapsed=%ld", this, proxyHandshakeAdmissionKey.c_str(), (long) elapsed);
+        releaseProxyHandshakeAdmission(false, "freeze_timeout");
     }
 }
 
@@ -1003,7 +1259,7 @@ bool ConnectionSocket::sendPendingTlsFrame() {
 }
 
 void ConnectionSocket::openConnection(std::string address, uint16_t port, std::string secret, bool ipv6, int32_t networkType) {
-    cancelProxyPacing();
+    cancelProxyHandshakeAdmission();
     clearPendingTlsFrame();
     currentNetworkType = networkType;
     isIpv6 = ipv6;
@@ -1014,6 +1270,7 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
     currentSecret = "";
     currentSecretDomain = "";
     currentProxyTlsProfile = normalizeMtProxyTlsProfile(MT_PROXY_TLS_PROFILE_ANDROID_CHROME);
+    proxyHandshakeAdmissionKey = "";
     tlsState = 0;
     mtproxySocketConnectedLogged = false;
     ConnectionsManager::getInstance(instanceNum).attachConnection(this);
@@ -1048,6 +1305,7 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
             currentSecret = proxySecret->substr(1, 16);
             currentSecretDomain = proxySecret->substr(17);
             currentProxyTlsProfile = normalizeMtProxyTlsProfile(proxyTlsProfile);
+            proxyHandshakeAdmissionKey = *proxyAddress + ":" + std::to_string((unsigned int) proxyPort) + ":" + currentSecretDomain;
             tempBuffLength = 65 * 1024;
         } else {
             proxyAuthState = 0;
@@ -1134,6 +1392,7 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
             currentSecret = secret.substr(1, 16);
             currentSecretDomain = secret.substr(17);
             currentProxyTlsProfile = normalizeMtProxyTlsProfile(ConnectionsManager::getInstance(instanceNum).proxyTlsProfile);
+            proxyHandshakeAdmissionKey = address + ":" + std::to_string((unsigned int) port) + ":" + currentSecretDomain;
             tempBuffLength = 65 * 1024;
         } else {
             proxyAuthState = 0;
@@ -1155,9 +1414,7 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
 
 void ConnectionSocket::openConnectionInternal(bool ipv6) {
     if (proxyAuthState >= 10) {
-        if (proxyPacingReady) {
-            proxyPacingReady = false;
-        } else if (scheduleProxyPacingIfNeeded(ipv6)) {
+        if (scheduleProxyHandshakeAdmissionIfNeeded(ipv6)) {
             return;
         }
     }
@@ -1216,7 +1473,8 @@ int32_t ConnectionSocket::checkSocketError(int32_t *error) {
 void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
     lastEventTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
     if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect reason=%d error=%d proxy_state=%d tls_state=%d bytes_read=%zu pending=%u/%u", this, reason, error, (int) proxyAuthState, (int) tlsState, bytesRead, pendingTlsFrameOffset, pendingTlsFrameSize);
-    cancelProxyPacing();
+    releaseProxyHandshakeAdmission(false, "closeSocket");
+    cancelProxyHandshakeAdmission();
     ConnectionsManager::getInstance(instanceNum).detachConnection(this);
     if (socketFd >= 0) {
         epoll_ctl(ConnectionsManager::getInstance(instanceNum).epolFd, EPOLL_CTL_DEL, socketFd, nullptr);
@@ -1325,6 +1583,7 @@ void ConnectionSocket::onEvent(uint32_t events) {
                                 return;
                             }
                             if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup server_hello_hmac_ok bytes=%zu len1=%zu len2=%zu", this, newBytesRead, len1, len2);
+                            releaseProxyHandshakeAdmission(true, "server_hello_hmac_ok");
                             tlsState = 1;
                             proxyAuthState = 0;
                             bytesRead = 0;
@@ -1503,6 +1762,7 @@ void ConnectionSocket::onEvent(uint32_t events) {
                             return;
                         }
                         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup client_hello_sent bytes=%d expected=%u domain_len=%d", this, (int) sentLength, size, (int) currentSecretDomain.size());
+                        markProxyHandshakeClientHelloSent();
                         adjustWriteOp();
                     }
                 } else {
@@ -1688,6 +1948,13 @@ bool ConnectionSocket::isDisconnected() {
 
 void ConnectionSocket::dropConnection() {
     closeSocket(0, 0);
+}
+
+void ConnectionSocket::setMtProxyHandshakePriority(int32_t priority) {
+    if (priority < MT_PROXY_HANDSHAKE_PRIORITY_GENERIC || priority > MT_PROXY_HANDSHAKE_PRIORITY_PROXY_CHECK) {
+        priority = MT_PROXY_HANDSHAKE_PRIORITY_PROXY_CHECK;
+    }
+    proxyHandshakeAdmissionPriority = priority;
 }
 
 void ConnectionSocket::setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, int32_t mtProxyTlsProfile) {

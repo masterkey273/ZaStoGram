@@ -22,6 +22,25 @@
 
 thread_local static uint32_t lastConnectionToken = 1;
 
+static int32_t mtProxyHandshakePriorityForConnectionType(ConnectionType type) {
+    switch ((int32_t) type & 0x0000ffff) {
+        case ConnectionTypeGeneric:
+        case ConnectionTypeTemp:
+            return 0;
+        case ConnectionTypeGenericMedia:
+            return 1;
+        case ConnectionTypePush:
+            return 2;
+        case ConnectionTypeDownload:
+            return 3;
+        case ConnectionTypeUpload:
+            return 4;
+        case ConnectionTypeProxy:
+        default:
+            return 5;
+    }
+}
+
 Connection::Connection(Datacenter *datacenter, ConnectionType type, int8_t num) : ConnectionSession(datacenter->instanceNum), ConnectionSocket(datacenter->instanceNum) {
     currentDatacenter = datacenter;
     connectionNum = num;
@@ -70,7 +89,7 @@ void Connection::suspendConnection(bool idle) {
 
 void Connection::onReceivedData(NativeByteBuffer *buffer) {
     AES_ctr128_encrypt(buffer->bytes(), buffer->bytes(), buffer->limit(), &decryptKey, decryptIv, decryptCount, &decryptNum);
-    
+
     failedConnectionCount = 0;
 
     if (connectionType == ConnectionTypeGeneric || connectionType == ConnectionTypeTemp || connectionType == ConnectionTypeGenericMedia) {
@@ -365,6 +384,7 @@ void Connection::connect() {
     lastPacketLength = 0;
     wasConnected = false;
     hasSomeDataSinceLastConnect = false;
+    setMtProxyHandshakePriority(mtProxyHandshakePriorityForConnectionType(connectionType));
     openConnection(hostAddress, hostPort, secret, ipv6 != 0, ConnectionsManager::getInstance(currentDatacenter->instanceNum).currentNetworkType);
     if (connectionType == ConnectionTypeProxy) {
         setTimeout(5);
@@ -579,10 +599,10 @@ void Connection::sendData(NativeByteBuffer *buff, bool reportAck, bool encrypted
             exit(1);
         }
         memcpy(decryptIv, temp + 32, 16);
-        
+
         AES_ctr128_encrypt(bytes, temp, 64, &encryptKey, encryptIv, encryptCount, &encryptNum);
         memcpy(bytes + 56, temp + 56, 8);
-        
+
         firstPacketSent = true;
     }
     if (currentProtocolType == ProtocolTypeEF) {
