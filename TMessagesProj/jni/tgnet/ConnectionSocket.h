@@ -78,7 +78,9 @@ private:
     int32_t currentProxyTlsProfile = 0;
 
     bool tlsHashMismatch = false;
+    bool serverHelloHmacMismatchObserved = false;
     bool tlsBufferSized = true;
+    uint8_t tlsBufferRecordType = 0;
     NativeByteBuffer *tlsBuffer = nullptr;
     ByteArray *tempBuffer = nullptr;
     ByteArray *pendingClientHello = nullptr;
@@ -90,6 +92,8 @@ private:
     uint32_t pendingTlsFrameOffset = 0;
     uint32_t pendingTlsPayloadSize = 0;
     int8_t tlsState = 0;
+    bool mtproxyFirstTlsFrameSentLogged = false;
+    bool mtproxyFirstTlsDataReceivedLogged = false;
 
     uint8_t proxyAuthState = 0;
     Timer *proxyHandshakeAdmissionTimer = nullptr;

@@ -231,8 +231,9 @@ def main() -> int:
         "FakeTLS send/recv loops must retry EINTR instead of treating it as a socket failure",
     )
     require(
-        "pending_hello=%u/%u" in cpp,
-        "MTProxy disconnect diagnostics must include pending ClientHello progress",
+        "pending_hello=%u/%u" in cpp
+        and "first_tls_sent=%d first_tls_recv=%d" in cpp,
+        "MTProxy disconnect diagnostics must include pending ClientHello progress and first post-handshake TLS activity",
     )
     require(
         "pacingDeferred" not in combined,
@@ -252,6 +253,31 @@ def main() -> int:
         and "sendPendingTlsFrame" in combined
         and "clearPendingTlsFrame" in combined,
         "TLS writes must keep a pending frame for partial-send handling",
+    )
+    require(
+        "pendingTlsFrameOffset += (uint32_t) sentLength;\n        lastEventTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();" in cpp,
+        "TLS pending-frame sends must refresh lastEventTime so active writes are not timed out as idle",
+    )
+    require(
+        "mtProxyVerifyServerHelloHmac" in cpp
+        and "TLS server hello hmac wait" in cpp
+        and "TLS server hello wait for tail data" in cpp
+        and "server_hello_hmac_timeout" in cpp,
+        "FakeTLS ServerHello HMAC verification must be TLS-record-aware and tolerate profiled telemt tail records",
+    )
+    require(
+        "TLS response ChangeCipherSpec skipped" in cpp
+        and "TLS response empty application data skipped" in cpp
+        and "mtproxy_disconnect tls_alert" in cpp
+        and "tlsBufferRecordType" in combined,
+        "post-handshake FakeTLS reader must skip control records and never pass empty TLS records into MTProto",
+    )
+    require(
+        "mtproxy_startup first_tls_app_sent" in cpp
+        and "mtproxy_startup first_tls_app_recv" in cpp
+        and "mtproxyFirstTlsFrameSentLogged" in combined
+        and "mtproxyFirstTlsDataReceivedLogged" in combined,
+        "FakeTLS diagnostics must mark the first post-handshake MTProto TLS write and read",
     )
 
     if errors:

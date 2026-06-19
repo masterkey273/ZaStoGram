@@ -59,6 +59,11 @@ static constexpr int64_t MT_PROXY_HANDSHAKE_FREEZE_TIMEOUT_MS = 4500;
 static constexpr bool MT_PROXY_HANDSHAKE_ADMISSION_ENABLED = false;
 static constexpr bool MT_PROXY_HANDSHAKE_FREEZE_COOLDOWN_ENABLED = false;
 static constexpr bool MT_PROXY_HANDSHAKE_CLOSE_ON_FREEZE_ENABLED = true;
+static constexpr size_t MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES = 64 * 1024;
+static constexpr size_t MT_PROXY_TLS_DIGEST_SIZE = 32;
+static constexpr uint8_t MT_PROXY_TLS_RECORD_CHANGE_CIPHER_SPEC = 0x14;
+static constexpr uint8_t MT_PROXY_TLS_RECORD_ALERT = 0x15;
+static constexpr uint8_t MT_PROXY_TLS_RECORD_APPLICATION_DATA = 0x17;
 
 struct MtProxyHandshakeQueuedRequest {
     ConnectionSocket *socket = nullptr;
@@ -98,6 +103,21 @@ static uint32_t secureRandomBounded(uint32_t bound) {
         v = secureRandomUint32();
     } while (v < threshold);
     return v % bound;
+}
+
+static bool mtProxyVerifyServerHelloHmac(const std::string &secret, const uint8_t *clientRandom, const uint8_t *responseBytes, size_t responseSize) {
+    if (responseSize < 43 || responseSize > MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES) {
+        return false;
+    }
+    std::vector<uint8_t> hmacInput(MT_PROXY_TLS_DIGEST_SIZE + responseSize);
+    memcpy(hmacInput.data(), clientRandom, MT_PROXY_TLS_DIGEST_SIZE);
+    memcpy(hmacInput.data() + MT_PROXY_TLS_DIGEST_SIZE, responseBytes, responseSize);
+    memset(hmacInput.data() + MT_PROXY_TLS_DIGEST_SIZE + 11, 0, MT_PROXY_TLS_DIGEST_SIZE);
+
+    uint8_t digest[MT_PROXY_TLS_DIGEST_SIZE];
+    uint32_t outLength = 0;
+    HMAC(EVP_sha256(), secret.data(), secret.size(), hmacInput.data(), hmacInput.size(), digest, &outLength);
+    return outLength == MT_PROXY_TLS_DIGEST_SIZE && memcmp(digest, responseBytes + 11, MT_PROXY_TLS_DIGEST_SIZE) == 0;
 }
 
 static uint32_t mtProxyHandshakeGrantDelay() {
@@ -1209,6 +1229,10 @@ void ConnectionSocket::markProxyHandshakeFreezeIfNeeded() {
         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_freeze_detected key=%s elapsed=%ld", this, proxyHandshakeAdmissionKey.c_str(), (long) elapsed);
         releaseProxyHandshakeAdmission(false, "freeze_timeout");
         if (MT_PROXY_HANDSHAKE_CLOSE_ON_FREEZE_ENABLED) {
+            if (serverHelloHmacMismatchObserved) {
+                tlsHashMismatch = true;
+                if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup server_hello_hmac_timeout bytes=%zu", this, bytesRead);
+            }
             if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup server_hello_timeout_close elapsed=%ld", this, (long) elapsed);
             closeSocket(1, ETIMEDOUT);
         }
@@ -1327,12 +1351,17 @@ bool ConnectionSocket::sendPendingTlsFrame() {
             return true;
         }
         pendingTlsFrameOffset += (uint32_t) sentLength;
+        lastEventTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
         if (ConnectionsManager::getInstance(instanceNum).delegate != nullptr) {
             ConnectionsManager::getInstance(instanceNum).delegate->onBytesSent((int32_t) sentLength, currentNetworkType, instanceNum);
         }
     }
 
     if (pendingTlsFrame != nullptr) {
+        if (tlsState != 0 && !mtproxyFirstTlsFrameSentLogged) {
+            mtproxyFirstTlsFrameSentLogged = true;
+            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup first_tls_app_sent payload=%u frame=%u", this, pendingTlsPayloadSize, pendingTlsFrameSize);
+        }
         outgoingByteStream->discard(pendingTlsPayloadSize);
         clearPendingTlsFrame();
         adjustWriteOp();
@@ -1356,6 +1385,8 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
     proxyHandshakeAdmissionKey = "";
     tlsState = 0;
     mtproxySocketConnectedLogged = false;
+    mtproxyFirstTlsFrameSentLogged = false;
+    mtproxyFirstTlsDataReceivedLogged = false;
     ConnectionsManager::getInstance(instanceNum).attachConnection(this);
 
     memset(&socketAddress, 0, sizeof(sockaddr_in));
@@ -1555,7 +1586,7 @@ int32_t ConnectionSocket::checkSocketError(int32_t *error) {
 
 void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
     lastEventTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
-    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect reason=%d error=%d proxy_state=%d tls_state=%d bytes_read=%zu pending_hello=%u/%u pending=%u/%u", this, reason, error, (int) proxyAuthState, (int) tlsState, bytesRead, pendingClientHelloOffset, pendingClientHelloSize, pendingTlsFrameOffset, pendingTlsFrameSize);
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect reason=%d error=%d proxy_state=%d tls_state=%d bytes_read=%zu pending_hello=%u/%u pending=%u/%u first_tls_sent=%d first_tls_recv=%d", this, reason, error, (int) proxyAuthState, (int) tlsState, bytesRead, pendingClientHelloOffset, pendingClientHelloSize, pendingTlsFrameOffset, pendingTlsFrameSize, mtproxyFirstTlsFrameSentLogged ? 1 : 0, mtproxyFirstTlsDataReceivedLogged ? 1 : 0);
     releaseProxyHandshakeAdmission(false, "closeSocket");
     cancelProxyHandshakeAdmission();
     ConnectionsManager::getInstance(instanceNum).detachConnection(this);
@@ -1579,6 +1610,7 @@ void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
         tlsBuffer->reuse();
         tlsBuffer = nullptr;
     }
+    tlsBufferRecordType = 0;
     onDisconnected(reason, error);
 }
 
@@ -1616,72 +1648,102 @@ void ConnectionSocket::onEvent(uint32_t events) {
                         }
                         if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS received %d", this, (int) readCount);
                         size_t newBytesRead = bytesRead + readCount;
-                        if (newBytesRead > 64 * 1024) {
+                        if (newBytesRead > MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES) {
                             closeSocket(1, -1);
                             if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS client hello too much data", this);
                             return;
                         }
-                        if (newBytesRead >= 16) {
-                            std::memcpy(tempBuffer->bytes + bytesRead, buffer->bytes(), (size_t) readCount);
+                        std::memcpy(tempBuffer->bytes + bytesRead, buffer->bytes(), (size_t) readCount);
+                        if (newBytesRead < 5) {
+                            bytesRead = newBytesRead;
+                            return;
+                        }
 
-                            static std::string hello1 = std::string("\x16\x03\x03", 3);
-                            if (std::memcmp(hello1.data(), tempBuffer->bytes, hello1.size()) != 0) {
-                                closeSocket(1, -1);
-                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS hello1 mismatch", this);
-                                return;
+                        static std::string hello1 = std::string("\x16\x03\x03", 3);
+                        if (std::memcmp(hello1.data(), tempBuffer->bytes, hello1.size()) != 0) {
+                            closeSocket(1, -1);
+                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS hello1 mismatch", this);
+                            return;
+                        }
+                        size_t len1 = (tempBuffer->bytes[3] << 8) + tempBuffer->bytes[4];
+                        if (len1 > MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES - 16) {
+                            closeSocket(1, -1);
+                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS len1 invalid", this);
+                            return;
+                        } else if (newBytesRead < len1 + 5) {
+                            if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS client hello wait for more data", this);
+                            bytesRead = newBytesRead;
+                            return;
+                        }
+
+                        static std::string hello2 = std::string("\x14\x03\x03\x00\x01\x01\x17\x03\x03", 9);
+                        if (std::memcmp(hello2.data(), tempBuffer->bytes + 5 + len1, hello2.size()) != 0) {
+                            closeSocket(1, -1);
+                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS hello2 mismatch", this);
+                            return;
+                        }
+                        size_t len2 = (tempBuffer->bytes[5 + 9 + len1] << 8) + tempBuffer->bytes[5 + 9 + len1 + 1];
+                        if (len2 > MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES - len1 - 5 - 11) {
+                            closeSocket(1, -1);
+                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS len2 invalid", this);
+                            return;
+                        }
+                        size_t candidateBytes = len2 + len1 + 5 + 11;
+                        if (newBytesRead < candidateBytes) {
+                            if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS client hello wait for more data", this);
+                            bytesRead = newBytesRead;
+                            return;
+                        }
+
+                        size_t matchedBytes = 0;
+                        size_t appFlightBytes = len2;
+                        while (candidateBytes <= newBytesRead) {
+                            if (mtProxyVerifyServerHelloHmac(currentSecret, tempBuffer->bytes + MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES, tempBuffer->bytes, candidateBytes)) {
+                                matchedBytes = candidateBytes;
+                                break;
                             }
-                            size_t len1 = (tempBuffer->bytes[3] << 8) + tempBuffer->bytes[4];
-                            if (len1 > 64 * 1024 - 5) {
-                                closeSocket(1, -1);
-                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS len1 invalid", this);
-                                return;
-                            } else if (newBytesRead < len1 + 5) {
-                                if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS client hello wait for more data", this);
+                            if (candidateBytes == newBytesRead) {
+                                break;
+                            }
+                            if (newBytesRead - candidateBytes < 5) {
+                                if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS server hello wait for tail header bytes=%zu candidate=%zu", this, newBytesRead, candidateBytes);
                                 bytesRead = newBytesRead;
                                 return;
                             }
-
-                            static std::string hello2 = std::string("\x14\x03\x03\x00\x01\x01\x17\x03\x03", 9);
-                            if (std::memcmp(hello2.data(), tempBuffer->bytes + 5 + len1, hello2.size()) != 0) {
-                                closeSocket(1, -1);
-                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS hello2 mismatch", this);
-                                return;
-                            }
-                            size_t len2 = (tempBuffer->bytes[5 + 9 + len1] << 8) + tempBuffer->bytes[5 + 9 + len1 + 1];
-                            if (len2 > 64 * 1024 - len1 - 5 - 11) {
-                                closeSocket(1, -1);
-                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS len2 invalid", this);
-                                return;
-                            } else if (newBytesRead < len2 + len1 + 5 + 11) {
-                                if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS client hello wait for more data", this);
-                                bytesRead = newBytesRead;
-                                return;
-                            }
-                            std::memcpy(tempBuffer->bytes + 64 * 1024 + 32, tempBuffer->bytes + 11, 32);
-                            std::memset(tempBuffer->bytes + 11, 0, 32);
-
-                            uint8_t *temp = new uint8_t[32 + newBytesRead];
-                            memcpy(temp, tempBuffer->bytes + 64 * 1024, 32);
-                            memcpy(temp + 32, tempBuffer->bytes, newBytesRead);
-                            uint32_t outLength;
-                            HMAC(EVP_sha256(), currentSecret.data(), currentSecret.size(), temp, 32 + newBytesRead, tempBuffer->bytes + 64 * 1024, &outLength);
-                            delete[] temp;
-                            if (std::memcmp(tempBuffer->bytes + 64 * 1024, tempBuffer->bytes + 64 * 1024 + 32, 32) != 0) {
+                            static std::string appHeader = std::string("\x17\x03\x03", 3);
+                            if (std::memcmp(appHeader.data(), tempBuffer->bytes + candidateBytes, appHeader.size()) != 0) {
                                 tlsHashMismatch = true;
                                 closeSocket(1, -1);
-                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS hash mismatch", this);
+                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS server hello tail mismatch at=%zu", this, candidateBytes);
                                 return;
                             }
-                            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup server_hello_hmac_ok bytes=%zu len1=%zu len2=%zu", this, newBytesRead, len1, len2);
-                            releaseProxyHandshakeAdmission(true, "server_hello_hmac_ok");
-                            tlsState = 1;
-                            proxyAuthState = 0;
-                            bytesRead = 0;
-                            adjustWriteOp();
-                        } else {
-                            std::memcpy(tempBuffer->bytes + bytesRead, buffer->bytes(), (size_t) readCount);
-                            bytesRead = newBytesRead;
+                            size_t nextLen = (tempBuffer->bytes[candidateBytes + 3] << 8) + tempBuffer->bytes[candidateBytes + 4];
+                            if (nextLen > MT_PROXY_TLS_SERVER_RESPONSE_MAX_BYTES - candidateBytes - 5) {
+                                closeSocket(1, -1);
+                                if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS server hello tail len invalid", this);
+                                return;
+                            }
+                            if (newBytesRead < candidateBytes + 5 + nextLen) {
+                                if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS server hello wait for tail data bytes=%zu candidate=%zu next=%zu", this, newBytesRead, candidateBytes, nextLen);
+                                bytesRead = newBytesRead;
+                                return;
+                            }
+                            candidateBytes += 5 + nextLen;
+                            appFlightBytes += 5 + nextLen;
                         }
+                        if (matchedBytes == 0) {
+                            serverHelloHmacMismatchObserved = true;
+                            if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS server hello hmac wait bytes=%zu candidate=%zu", this, newBytesRead, candidateBytes);
+                            bytesRead = newBytesRead;
+                            return;
+                        }
+                        serverHelloHmacMismatchObserved = false;
+                        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup server_hello_hmac_ok bytes=%zu len1=%zu len2=%zu flight=%zu extra=%zu", this, matchedBytes, len1, len2, appFlightBytes, newBytesRead - matchedBytes);
+                        releaseProxyHandshakeAdmission(true, "server_hello_hmac_ok");
+                        tlsState = 1;
+                        proxyAuthState = 0;
+                        bytesRead = 0;
+                        adjustWriteOp();
                     } else if (proxyAuthState == 2) {
                         if (readCount == 2) {
                             uint8_t auth_method = buffer->bytes()[1];
@@ -1755,19 +1817,40 @@ void ConnectionSocket::onEvent(uint32_t events) {
                                         }
                                         memcpy(header + offset, buffer->bytes() + pos, (uint8_t) (5 - offset));
 
-                                        static std::string header1 = std::string("\x17\x03\x03", 3);
-                                        if (std::memcmp(header1.data(), header, header1.size()) != 0) {
+                                        if (header[1] != 0x03 || header[2] != 0x03) {
                                             closeSocket(1, -1);
-                                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS response header1 mismatch", this);
+                                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS response version mismatch type=0x%02x version=0x%02x%02x", this, header[0], header[1], header[2]);
                                             return;
                                         }
                                         uint32_t len1 = (header[3] << 8) + header[4];
+                                        if (header[0] == MT_PROXY_TLS_RECORD_APPLICATION_DATA && len1 == 0) {
+                                            buffer->position(pos + (5 - offset));
+                                            tlsBufferRecordType = 0;
+                                            if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS response empty application data skipped", this);
+                                            continue;
+                                        }
+                                        if (header[0] == MT_PROXY_TLS_RECORD_CHANGE_CIPHER_SPEC && len1 != 1) {
+                                            closeSocket(1, -1);
+                                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS response CCS len invalid %u", this, len1);
+                                            return;
+                                        }
+                                        if (header[0] == MT_PROXY_TLS_RECORD_ALERT && len1 != 2) {
+                                            closeSocket(1, -1);
+                                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS response alert len invalid %u", this, len1);
+                                            return;
+                                        }
+                                        if (header[0] != MT_PROXY_TLS_RECORD_APPLICATION_DATA && header[0] != MT_PROXY_TLS_RECORD_CHANGE_CIPHER_SPEC && header[0] != MT_PROXY_TLS_RECORD_ALERT) {
+                                            closeSocket(1, -1);
+                                            if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS response record type mismatch 0x%02x", this, header[0]);
+                                            return;
+                                        }
                                         if (len1 > 64 * 1024) {
                                             closeSocket(1, -1);
                                             if (LOGS_ENABLED) DEBUG_E("connection(%p) TLS response len1 invalid", this);
                                             return;
                                         } else {
                                             tlsBuffer = BuffersStorage::getInstance().getFreeBuffer(len1);
+                                            tlsBufferRecordType = header[0];
                                             tlsBufferSized = true;
                                             buffer->position(pos + (5 - offset));
                                         }
@@ -1779,12 +1862,28 @@ void ConnectionSocket::onEvent(uint32_t events) {
                                     buffer->limit((uint32_t) readCount);
                                     if (tlsBuffer->remaining() == 0) {
                                         tlsBuffer->rewind();
-                                        onReceivedData(tlsBuffer);
-                                        if (tlsBuffer == nullptr) {
+                                        if (tlsBufferRecordType == MT_PROXY_TLS_RECORD_APPLICATION_DATA) {
+                                            if (!mtproxyFirstTlsDataReceivedLogged) {
+                                                mtproxyFirstTlsDataReceivedLogged = true;
+                                                if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup first_tls_app_recv payload=%d", this, tlsBuffer->limit());
+                                            }
+                                            onReceivedData(tlsBuffer);
+                                            if (tlsBuffer == nullptr) {
+                                                return;
+                                            }
+                                        } else if (tlsBufferRecordType == MT_PROXY_TLS_RECORD_CHANGE_CIPHER_SPEC) {
+                                            if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS response ChangeCipherSpec skipped", this);
+                                        } else if (tlsBufferRecordType == MT_PROXY_TLS_RECORD_ALERT) {
+                                            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect tls_alert", this);
+                                            tlsBuffer->reuse();
+                                            tlsBuffer = nullptr;
+                                            tlsBufferRecordType = 0;
+                                            closeSocket(1, 0);
                                             return;
                                         }
                                         tlsBuffer->reuse();
                                         tlsBuffer = nullptr;
+                                        tlsBufferRecordType = 0;
                                     } else {
                                         if (LOGS_ENABLED) DEBUG_D("connection(%p) TLS response wait for more data, total size %d, left %d", this, tlsBuffer->limit(), tlsBuffer->remaining());
                                     }
@@ -1827,6 +1926,7 @@ void ConnectionSocket::onEvent(uint32_t events) {
                     if (proxyAuthState == 10) {
                         lastEventTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
                         tlsHashMismatch = false;
+                        serverHelloHmacMismatchObserved = false;
                         proxyAuthState = 11;
                         const char *profileName = mtProxyTlsProfileName(currentProxyTlsProfile);
                         TlsHello hello = selectMtProxyTlsHello(currentProxyTlsProfile);
