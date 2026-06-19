@@ -176,6 +176,30 @@ ApplicationData-записями в серверном handshake flight.
 GitHub Actions настроен на ccache с `CCACHE_COMPILERCHECK=content`, чтобы
 повторные сборки нативного кода были заметно быстрее после прогрева кэша.
 
+На время диагностики MTProxy GitHub Actions включает сетевые логи Telegram прямо
+в обычном артефакте `ZaStoGram-standalone-afat`. После установки такого APK можно
+собрать маркеры:
+
+```powershell
+D:\bin\platform-tools\adb.exe devices -l
+```
+
+Из WSL:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w Tools/collect_mtproxy_logs.ps1)" -Adb "D:\bin\platform-tools\adb.exe" -Package org.zastogram.messenger -Seconds 180
+```
+
+Во время записи надо открыть приложение и повторить подключение к MTProxy.
+Главный файл для разбора: `mtproxy_markers.txt`.
+Скрипт также создаёт `mtproxy_analysis.txt`: он группирует попытки по
+`ConnectionSocket` и показывает, где остановилось подключение:
+TCP/connect, отправка `ClientHello`, проверка `server_hello_hmac_ok`, переход в
+`on_connected` или первые TLS `ApplicationData`-записи MTProto. Именно этот файл
+нужен, чтобы отделить нашу ошибку транспорта от внешней блокировки.
+Перед публичным релизом это нужно выключить обратно, чтобы не оставлять
+подробные сетевые логи в обычной сборке.
+
 ## Как пользоваться
 
 1. Подними MTProxy с FakeTLS вне зоны блокировки.

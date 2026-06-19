@@ -1,5 +1,5 @@
 param(
-    [string] $Package = "org.zastogram.messenger.beta",
+    [string] $Package = "org.zastogram.messenger",
     [string] $OutDir = "",
     [string] $Adb = "",
     [string] $Serial = "",
@@ -176,9 +176,22 @@ if ($matches) {
     "No MTProxy markers found." | Set-Content -Encoding UTF8 $markerPath
 }
 
+$analysisPath = Join-Path $sessionDir "mtproxy_analysis.txt"
+$analyzerPath = Join-Path $PSScriptRoot "analyze_mtproxy_markers.py"
+$python = Get-Command python3 -ErrorAction SilentlyContinue
+if (-not $python) {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+}
+if ($python -and (Test-Path $analyzerPath)) {
+    & $python.Source $analyzerPath $markerPath 2>&1 | Tee-Object -FilePath $analysisPath | Out-Host
+} else {
+    "Python was not found; skipped MTProxy marker analysis." | Set-Content -Encoding UTF8 $analysisPath
+}
+
 "finished=$((Get-Date).ToString('o'))" | Add-Content -Encoding UTF8 $metaPath
 
 Write-Host ""
 Write-Host "Done."
 Write-Host "Session directory: $sessionDir"
 Write-Host "Markers: $markerPath"
+Write-Host "Analysis: $analysisPath"
