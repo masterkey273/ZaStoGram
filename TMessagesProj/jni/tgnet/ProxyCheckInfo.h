@@ -43,6 +43,8 @@ public:
     int32_t mtProxyTlsProfile = 0;
     int32_t mtProxyClientHelloFragmentation = 0;
     int32_t mtProxyHandshakeAdmission = 0;
+    int32_t mtProxyRecordSizingMode = 0;
+    int32_t mtProxyTimingMode = 0;
     int64_t pingId = 0;
     onRequestTimeFunc onRequestTime;
     int32_t instanceNum = 0;

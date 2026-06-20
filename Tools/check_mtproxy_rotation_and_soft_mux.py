@@ -123,12 +123,12 @@ def main() -> None:
     require(
         "resolveMtProxyHandshakeAdmissionMode()" in connections
         and "mtProxyHandshakeAdmission" in connections
-        and "native_setProxySettings(currentAccount, proxyAddress, proxyPort, proxyUsername, proxyPassword, proxySecret, mtProxyTlsProfile, mtProxyClientHelloFragmentation, mtProxyHandshakeAdmission)" in connections,
+        and "native_setProxySettings(currentAccount, proxyAddress, proxyPort, proxyUsername, proxyPassword, proxySecret, mtProxyTlsProfile, mtProxyClientHelloFragmentation, mtProxyHandshakeAdmission, mtProxyRecordSizingMode, mtProxyTimingMode)" in connections,
         "Java must pass the runtime admission-controller setting into native proxy settings",
     )
     require(
-        'native_setProxySettings", "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;III)V"' in wrapper_cpp
-        and 'native_checkProxy", "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;IIILorg/telegram/tgnet/RequestTimeDelegate;)J"' in wrapper_cpp,
+        'native_setProxySettings", "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIII)V"' in wrapper_cpp
+        and 'native_checkProxy", "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIILorg/telegram/tgnet/RequestTimeDelegate;)J"' in wrapper_cpp,
         "JNI signatures must carry the admission-controller integer",
     )
     require(

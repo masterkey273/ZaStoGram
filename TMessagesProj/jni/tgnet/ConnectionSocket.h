@@ -33,7 +33,7 @@ public:
     time_t getTimeout();
     bool isDisconnected();
     void dropConnection();
-    void setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, int32_t mtProxyTlsProfile, int32_t mtProxyClientHelloFragmentation);
+    void setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, int32_t mtProxyTlsProfile, int32_t mtProxyClientHelloFragmentation, int32_t mtProxyRecordSizingMode, int32_t mtProxyTimingMode);
     void onHostNameResolved(std::string host, std::string ip, bool ipv6);
     void setMtProxyHandshakePriority(int32_t priority);
     const char *getProxyCheckDiagnostic();
@@ -56,6 +56,8 @@ protected:
     uint16_t overrideProxyPort = 1080;
     int32_t overrideProxyTlsProfile = 0;
     int32_t overrideProxyClientHelloFragmentation = 0;
+    int32_t overrideProxyRecordSizingMode = 0;
+    int32_t overrideProxyTimingMode = 0;
 
 private:
     ByteStream *outgoingByteStream = nullptr;
@@ -82,6 +84,8 @@ private:
     int32_t currentProxyTlsProfile = 0;
     int32_t currentEffectiveProxyTlsProfile = 0;
     int32_t currentClientHelloFragmentation = 0;
+    int32_t currentRecordSizingMode = 0;
+    int32_t currentTimingMode = 0;
     std::string currentProxyTlsProfileKey;
     std::string proxyCheckDiagnostic = "tcp_not_connected";
 
@@ -104,6 +108,7 @@ private:
     uint32_t pendingTlsFrameSize = 0;
     uint32_t pendingTlsFrameOffset = 0;
     uint32_t pendingTlsPayloadSize = 0;
+    int64_t nextTlsFrameWriteTime = 0;
     int8_t tlsState = 0;
     bool mtproxyFirstTlsFrameSentLogged = false;
     bool mtproxyFirstTlsDataReceivedLogged = false;
@@ -142,6 +147,8 @@ private:
     void clearPendingTlsFrame();
     bool buildPendingTlsFrame(NativeByteBuffer *buffer, uint32_t remaining);
     bool sendPendingTlsFrame();
+    uint32_t nextMtProxyTlsRecordPayloadSize(uint32_t remaining);
+    bool scheduleMtProxyDataTimingIfNeeded();
 
     friend class EventObject;
     friend class ConnectionsManager;

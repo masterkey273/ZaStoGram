@@ -10927,6 +10927,16 @@
     <string name="MtProxySoftMuxInfo">Uses fewer parallel download and upload connections while MTProxy is active. Direct connections keep the default behavior.</string>
     <string name="MtProxyHandshakeAdmission">Gate FakeTLS handshakes</string>
     <string name="MtProxyHandshakeAdmissionInfo">Starts FakeTLS handshakes to the same proxy endpoint through a small priority queue. Proxy checks bypass this gate.</string>
+    <string name="MtProxyRecordSizing">TLS record size</string>
+    <string name="MtProxyRecordSizingInfo">Changes only FakeTLS ApplicationData record sizes after connection. Leave off when diagnosing transport stability.</string>
+    <string name="MtProxyRecordSizingOff">Off</string>
+    <string name="MtProxyRecordSizingConservative">Safe</string>
+    <string name="MtProxyRecordSizingVaried">Varied</string>
+    <string name="MtProxyTiming">Traffic timing</string>
+    <string name="MtProxyTimingInfo">Adds small nonblocking pauses between FakeTLS ApplicationData records. Pending partial records are still sent fully.</string>
+    <string name="MtProxyTimingOff">Off</string>
+    <string name="MtProxyTimingGentle">Gentle</string>
+    <string name="MtProxyTimingBalanced">Balanced</string>
     <string name="MtProxyTlsProfile">JA4 / TLS profile</string>
     <string name="MtProxyTlsProfileInfo">Auto keeps one stable profile per proxy and secret. Auto rotate changes the profile only after suspicious FakeTLS failures. Manual mode forces one profile for all FakeTLS proxies.</string>
     <string name="MtProxyTlsProfileAuto">Auto</string>

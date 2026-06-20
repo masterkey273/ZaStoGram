@@ -59,8 +59,15 @@ static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_ADMISSION = 1;
 static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_FREEZE = 2;
 static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_SERVER_HELLO = 3;
 static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_CLIENT_HELLO_FRAGMENT = 4;
+static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_TLS_FRAME = 5;
 static constexpr int32_t MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF = 0;
 static constexpr int32_t MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT = 1;
+static constexpr int32_t MT_PROXY_RECORD_SIZING_OFF = 0;
+static constexpr int32_t MT_PROXY_RECORD_SIZING_CONSERVATIVE = 1;
+static constexpr int32_t MT_PROXY_RECORD_SIZING_VARIED = 2;
+static constexpr int32_t MT_PROXY_TIMING_OFF = 0;
+static constexpr int32_t MT_PROXY_TIMING_GENTLE = 1;
+static constexpr int32_t MT_PROXY_TIMING_BALANCED = 2;
 static constexpr int64_t MT_PROXY_HANDSHAKE_FREEZE_TIMEOUT_MS = 4500;
 static constexpr int64_t MT_PROXY_SERVER_HELLO_HMAC_WAIT_MS = 900;
 static constexpr bool MT_PROXY_HANDSHAKE_FREEZE_COOLDOWN_ENABLED = false;
@@ -150,8 +157,7 @@ struct MtProxyTlsAutoProfileState {
 static pthread_mutex_t mtProxyTlsAutoProfilesMutex = PTHREAD_MUTEX_INITIALIZER;
 static std::map<std::string, MtProxyTlsAutoProfileState> mtProxyTlsAutoRotateProfiles;
 
-// Crypto-secure RNG for variable bytes inside the fake TLS profile: extension order and
-// ECH/padding lengths. Transport timing/data-path stays on the tsrman-proven code path.
+// Crypto-secure RNG for FakeTLS profile variance and runtime-gated data shaping.
 static uint32_t secureRandomUint32() {
     uint32_t v;
     RAND_bytes((uint8_t *) &v, sizeof(v));
@@ -980,6 +986,20 @@ static int32_t normalizeMtProxyClientHelloFragmentation(int32_t mode) {
     return mode == MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT ? MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT : MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF;
 }
 
+static int32_t normalizeMtProxyRecordSizingMode(int32_t mode) {
+    if (mode >= MT_PROXY_RECORD_SIZING_OFF && mode <= MT_PROXY_RECORD_SIZING_VARIED) {
+        return mode;
+    }
+    return MT_PROXY_RECORD_SIZING_OFF;
+}
+
+static int32_t normalizeMtProxyTimingMode(int32_t mode) {
+    if (mode >= MT_PROXY_TIMING_OFF && mode <= MT_PROXY_TIMING_BALANCED) {
+        return mode;
+    }
+    return MT_PROXY_TIMING_OFF;
+}
+
 static const char *mtProxyTlsProfileName(int32_t profile) {
     switch (normalizeMtProxyTlsProfile(profile)) {
         case MT_PROXY_TLS_PROFILE_AUTO:
@@ -1285,6 +1305,10 @@ void ConnectionSocket::scheduleProxyHandshakeAdmissionTimer(uint32_t delay, int3
                 adjustWriteOp();
                 return;
             }
+            if (mode == MT_PROXY_HANDSHAKE_TIMER_TLS_FRAME) {
+                adjustWriteOp();
+                return;
+            }
             if (mode == MT_PROXY_HANDSHAKE_TIMER_ADMISSION) {
                 bool delayedIpv6 = proxyHandshakeAdmissionIpv6;
                 if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup admission_timer_fire generation=%u ready=%d queued=%d active=%d", this, proxyHandshakeAdmissionGeneration, proxyHandshakeAdmissionReady ? 1 : 0, proxyHandshakeAdmissionQueued ? 1 : 0, proxyHandshakeAdmissionActive ? 1 : 0);
@@ -1533,14 +1557,58 @@ void ConnectionSocket::clearPendingTlsFrame() {
     pendingTlsFrameSize = 0;
     pendingTlsFrameOffset = 0;
     pendingTlsPayloadSize = 0;
+    nextTlsFrameWriteTime = 0;
+}
+
+uint32_t ConnectionSocket::nextMtProxyTlsRecordPayloadSize(uint32_t remaining) {
+    uint32_t cap = 2878;
+    if (currentRecordSizingMode == MT_PROXY_RECORD_SIZING_CONSERVATIVE) {
+        static const uint32_t caps[] = {1440, 1728, 2016, 2304, 2580, 2878};
+        cap = caps[secureRandomBounded(sizeof(caps) / sizeof(caps[0]))];
+    } else if (currentRecordSizingMode == MT_PROXY_RECORD_SIZING_VARIED) {
+        uint32_t minCap = mtproxyFirstTlsFrameSentLogged ? 768 : 1200;
+        uint32_t maxCap = mtproxyFirstTlsFrameSentLogged ? 2878 : 2016;
+        cap = minCap + secureRandomBounded(maxCap - minCap + 1);
+    }
+    if (cap > 2878) {
+        cap = 2878;
+    }
+    if (cap < 256) {
+        cap = 256;
+    }
+    if (remaining < cap) {
+        cap = remaining;
+    }
+    if (currentRecordSizingMode != MT_PROXY_RECORD_SIZING_OFF && LOGS_ENABLED) {
+        DEBUG_D("connection(%p) mtproxy_data record_sizing mode=%d cap=%u remaining=%u first_sent=%d", this, (int) currentRecordSizingMode, cap, remaining, mtproxyFirstTlsFrameSentLogged ? 1 : 0);
+    }
+    return cap;
+}
+
+bool ConnectionSocket::scheduleMtProxyDataTimingIfNeeded() {
+    if (currentTimingMode == MT_PROXY_TIMING_OFF || pendingTlsFrame != nullptr || nextTlsFrameWriteTime == 0) {
+        return false;
+    }
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    if (now >= nextTlsFrameWriteTime) {
+        nextTlsFrameWriteTime = 0;
+        return false;
+    }
+    uint32_t delay = (uint32_t) std::min<int64_t>(250, nextTlsFrameWriteTime - now);
+    if (LOGS_ENABLED) {
+        DEBUG_D("connection(%p) mtproxy_data timing_delay mode=%d delay=%u", this, (int) currentTimingMode, delay);
+    }
+    scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_TLS_FRAME, proxyHandshakeAdmissionIpv6);
+    return true;
 }
 
 bool ConnectionSocket::buildPendingTlsFrame(NativeByteBuffer *buffer, uint32_t remaining) {
     if (pendingTlsFrame != nullptr || buffer == nullptr || remaining == 0) {
         return false;
     }
-    if (remaining > 2878) {
-        remaining = 2878;
+    uint32_t cap = nextMtProxyTlsRecordPayloadSize(remaining);
+    if (remaining > cap) {
+        remaining = cap;
     }
     size_t headersSize = 0;
     if (tlsState == 1) {
@@ -1601,6 +1669,13 @@ bool ConnectionSocket::sendPendingTlsFrame() {
         }
         outgoingByteStream->discard(pendingTlsPayloadSize);
         clearPendingTlsFrame();
+        if (currentTimingMode != MT_PROXY_TIMING_OFF && outgoingByteStream->hasData()) {
+            uint32_t delay = currentTimingMode == MT_PROXY_TIMING_GENTLE ? 10 + secureRandomBounded(31) : 25 + secureRandomBounded(76);
+            nextTlsFrameWriteTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis() + delay;
+            if (LOGS_ENABLED) {
+                DEBUG_D("connection(%p) mtproxy_data timing_next mode=%d delay=%u", this, (int) currentTimingMode, delay);
+            }
+        }
         adjustWriteOp();
     }
     return true;
@@ -1623,6 +1698,9 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
     currentProxyTlsProfile = normalizeMtProxyTlsProfile(MT_PROXY_TLS_PROFILE_ANDROID_CHROME);
     currentEffectiveProxyTlsProfile = currentProxyTlsProfile;
     currentClientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF;
+    currentRecordSizingMode = MT_PROXY_RECORD_SIZING_OFF;
+    currentTimingMode = MT_PROXY_TIMING_OFF;
+    nextTlsFrameWriteTime = 0;
     currentProxyTlsProfileKey = "";
     proxyCheckDiagnostic = "tcp_not_connected";
     proxyHandshakeAdmissionKey = "";
@@ -1640,12 +1718,16 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
     uint16_t proxyPort = overrideProxyPort;
     int32_t proxyTlsProfile = overrideProxyTlsProfile;
     int32_t proxyClientHelloFragmentation = overrideProxyClientHelloFragmentation;
+    int32_t proxyRecordSizingMode = overrideProxyRecordSizingMode;
+    int32_t proxyTimingMode = overrideProxyTimingMode;
     if (proxyAddress->empty()) {
         proxyAddress = &ConnectionsManager::getInstance(instanceNum).proxyAddress;
         proxyPort = ConnectionsManager::getInstance(instanceNum).proxyPort;
         proxySecret = &ConnectionsManager::getInstance(instanceNum).proxySecret;
         proxyTlsProfile = ConnectionsManager::getInstance(instanceNum).proxyTlsProfile;
         proxyClientHelloFragmentation = ConnectionsManager::getInstance(instanceNum).proxyClientHelloFragmentation;
+        proxyRecordSizingMode = ConnectionsManager::getInstance(instanceNum).proxyRecordSizingMode;
+        proxyTimingMode = ConnectionsManager::getInstance(instanceNum).proxyTimingMode;
     }
 
     if (!proxyAddress->empty()) {
@@ -1669,6 +1751,8 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
             currentProxyTlsProfileKey = *proxyAddress + ":" + std::to_string((unsigned int) proxyPort) + ":" + currentSecretDomain;
             currentEffectiveProxyTlsProfile = resolveMtProxyEffectiveTlsProfile(currentProxyTlsProfile, currentProxyTlsProfileKey);
             currentClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(proxyClientHelloFragmentation);
+            currentRecordSizingMode = normalizeMtProxyRecordSizingMode(proxyRecordSizingMode);
+            currentTimingMode = normalizeMtProxyTimingMode(proxyTimingMode);
             proxyHandshakeAdmissionKey = *proxyAddress + ":" + std::to_string((unsigned int) proxyPort) + ":" + currentSecretDomain;
             tempBuffLength = 65 * 1024;
         } else {
@@ -1769,6 +1853,8 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
             currentProxyTlsProfileKey = address + ":" + std::to_string((unsigned int) port) + ":" + currentSecretDomain;
             currentEffectiveProxyTlsProfile = resolveMtProxyEffectiveTlsProfile(currentProxyTlsProfile, currentProxyTlsProfileKey);
             currentClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(ConnectionsManager::getInstance(instanceNum).proxyClientHelloFragmentation);
+            currentRecordSizingMode = normalizeMtProxyRecordSizingMode(ConnectionsManager::getInstance(instanceNum).proxyRecordSizingMode);
+            currentTimingMode = normalizeMtProxyTimingMode(ConnectionsManager::getInstance(instanceNum).proxyTimingMode);
             proxyHandshakeAdmissionKey = address + ":" + std::to_string((unsigned int) port) + ":" + currentSecretDomain;
             tempBuffLength = 65 * 1024;
         } else {
@@ -1785,7 +1871,7 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
         }
     }
 
-    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup connect_start proxy_state=%d secret_kind=%s is_faketls=%d domain_len=%d profile=%s effective_profile=%s clienthello_fragment=%d address=%s port=%u", this, (int) proxyAuthState, currentSecretKind, currentSecretIsFakeTls ? 1 : 0, (int) currentSecretDomain.size(), mtProxyTlsProfileName(currentProxyTlsProfile), mtProxyTlsProfileName(currentEffectiveProxyTlsProfile), currentClientHelloFragmentation, currentAddress.c_str(), (unsigned int) currentPort);
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup connect_start proxy_state=%d secret_kind=%s is_faketls=%d domain_len=%d profile=%s effective_profile=%s clienthello_fragment=%d record_sizing=%d timing=%d address=%s port=%u", this, (int) proxyAuthState, currentSecretKind, currentSecretIsFakeTls ? 1 : 0, (int) currentSecretDomain.size(), mtProxyTlsProfileName(currentProxyTlsProfile), mtProxyTlsProfileName(currentEffectiveProxyTlsProfile), currentClientHelloFragmentation, currentRecordSizingMode, currentTimingMode, currentAddress.c_str(), (unsigned int) currentPort);
     openConnectionInternal(ipv6);
 }
 
@@ -2327,6 +2413,9 @@ void ConnectionSocket::onEvent(uint32_t events) {
                         return;
                     }
                 }
+                if (tlsState != 0 && scheduleMtProxyDataTimingIfNeeded()) {
+                    return;
+                }
 
                 NativeByteBuffer *buffer = ConnectionsManager::getInstance(instanceNum).networkBuffer;
                 buffer->clear();
@@ -2450,7 +2539,7 @@ void ConnectionSocket::setMtProxyHandshakePriority(int32_t priority) {
     proxyHandshakeAdmissionPriority = priority;
 }
 
-void ConnectionSocket::setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, int32_t mtProxyTlsProfile, int32_t mtProxyClientHelloFragmentation) {
+void ConnectionSocket::setOverrideProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, int32_t mtProxyTlsProfile, int32_t mtProxyClientHelloFragmentation, int32_t mtProxyRecordSizingMode, int32_t mtProxyTimingMode) {
     overrideProxyAddress = address;
     overrideProxyPort = port;
     overrideProxyUser = username;
@@ -2458,6 +2547,8 @@ void ConnectionSocket::setOverrideProxy(std::string address, uint16_t port, std:
     overrideProxySecret = secret;
     overrideProxyTlsProfile = normalizeMtProxyTlsProfile(mtProxyTlsProfile);
     overrideProxyClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(mtProxyClientHelloFragmentation);
+    overrideProxyRecordSizingMode = normalizeMtProxyRecordSizingMode(mtProxyRecordSizingMode);
+    overrideProxyTimingMode = normalizeMtProxyTimingMode(mtProxyTimingMode);
 }
 
 void ConnectionSocket::onHostNameResolved(std::string host, std::string ip, bool ipv6) {
