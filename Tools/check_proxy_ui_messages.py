@@ -5,6 +5,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 STRINGS = ROOT / "TMessagesProj/src/main/res/values/strings.xml"
+STRINGS_RU = ROOT / "TMessagesProj/src/main/res/values-ru/strings.xml"
 PROXY_LIST = ROOT / "TMessagesProj/src/main/java/org/telegram/ui/ProxyListActivity.java"
 PROXY_SETTINGS = ROOT / "TMessagesProj/src/main/java/org/telegram/ui/ProxySettingsActivity.java"
 ANDROID_UTILITIES = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java"
@@ -13,6 +14,12 @@ DIAGNOSTICS = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyCh
 checks = [
     (STRINGS, 'name="ProxyStatusConnectingSlow"', "missing slow connecting proxy status string"),
     (STRINGS, 'name="ProxyStatusCheckingConnection"', "missing proxy checking status string"),
+    (STRINGS, 'name="ProxyStatusEndpointCooldown"', "missing endpoint cooldown proxy status string"),
+    (STRINGS, 'name="ProxyStatusTcpConnectGate"', "missing TCP connect gate proxy status string"),
+    (STRINGS, 'name="ProxyStatusDnsCoalesceWait"', "missing DNS coalescing proxy status string"),
+    (STRINGS, 'name="ProxyStatusDnsCacheHit"', "missing DNS cache-hit proxy status string"),
+    (STRINGS, 'name="ProxyStatusDnsCacheStore"', "missing DNS cache-store proxy status string"),
+    (STRINGS, 'name="ProxyStatusPhaseAdaptiveRecipe"', "missing phase-adaptive recipe proxy status string"),
     (STRINGS, 'name="ProxyStatusWaitingTcp"', "missing current-proxy TCP wait status string"),
     (STRINGS, 'name="ProxyStatusNetworkBlockSuspected"', "missing network-block suspected status string"),
     (STRINGS, 'name="ProxyStatusUnchecked"', "missing passive unchecked proxy status string"),
@@ -20,6 +27,8 @@ checks = [
     (STRINGS, 'name="ProxyStatusTcpNotConnected"', "missing TCP failure proxy status string"),
     (STRINGS, 'name="ProxyStatusTcpConnectedNoPong"', "missing post-TCP/no-pong proxy status string"),
     (STRINGS, 'name="ProxyStatusClientHelloNoServerHello"', "missing ClientHello/ServerHello proxy status string"),
+    (STRINGS, 'name="ProxyStatusMtproxyPacketSentNoResponse"', "missing dd/plain MTProxy no-response proxy status string"),
+    (STRINGS, 'name="ProxyStatusDroppedEarlyAfterAppData"', "missing early post-appdata drop proxy status string"),
     (STRINGS, 'name="ProxyWindowStatusDisabled"', "missing proxy window disabled subtitle"),
     (STRINGS, 'name="ProxyWindowStatusReady"', "missing proxy window ready subtitle"),
     (STRINGS, 'name="ProxyWindowStatusChecking"', "missing proxy window checking subtitle"),
@@ -31,6 +40,7 @@ checks = [
     (DIAGNOSTICS, "network_block_suspected", "diagnostic map must use a readable network-block phase string"),
     (DIAGNOSTICS, "ProxyStatusUnchecked", "diagnostic map must show passive proxy rows as unchecked"),
     (DIAGNOSTICS, "ProxyStatusTcpConnectedNoPong", "diagnostic map does not expose post-TCP/no-pong text"),
+    (DIAGNOSTICS, "ProxyStatusDroppedEarlyAfterAppData", "diagnostic map does not expose early post-appdata drop text"),
     (DIAGNOSTICS, "headerStatusText", "diagnostic map must provide proxy-window header status text"),
     (DIAGNOSTICS, "shortDiagnosticText", "diagnostic map must provide compact per-proxy phase text"),
     (PROXY_LIST, "ProxyCheckDiagnostics.statusText", "proxy list must render proxy status through the diagnostic map"),
@@ -46,6 +56,10 @@ checks = [
     (ANDROID_UTILITIES, "if (!started)", "bottom-sheet proxy check must fail fast when the scheduler refuses to start"),
     (ANDROID_UTILITIES, "checking[0] = false;", "bottom-sheet proxy check must clear its checking flag on every terminal path"),
 ]
+
+for _, needle, message in list(checks):
+    if needle.startswith('name="ProxyStatus') or needle.startswith('name="ProxyWindowStatus'):
+        checks.append((STRINGS_RU, needle, "Russian localization missing: " + message))
 
 android_utilities_text = ANDROID_UTILITIES.read_text(encoding="utf-8")
 if "ConnectionsManager.getInstance(UserConfig.selectedAccount).checkProxy" in android_utilities_text:

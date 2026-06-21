@@ -96,6 +96,7 @@ def main() -> None:
     require(
         "currentRecordSizingMode" in socket_h
         and "currentTimingMode" in socket_h
+        and "mtproxyTlsFrameCompletedCount" in socket_h
         and "nextMtProxyTlsRecordPayloadSize" in socket_cpp
         and "scheduleMtProxyDataTimingIfNeeded" in socket_cpp,
         "ConnectionSocket must apply record sizing and timing modes in the FakeTLS data path",
@@ -105,6 +106,41 @@ def main() -> None:
         and "mtproxy_data record_sizing" in socket_cpp
         and "mtproxy_data timing_delay" in socket_cpp,
         "data-path layers must be logged and must not replace the pending TLS write queue",
+    )
+    send_start = socket_cpp.find("bool ConnectionSocket::sendPendingTlsFrame()")
+    send_end = socket_cpp.find("void ConnectionSocket::openConnection", send_start)
+    schedule_start = socket_cpp.find("bool ConnectionSocket::scheduleMtProxyDataTimingIfNeeded()")
+    schedule_end = socket_cpp.find("void ConnectionSocket::startMtProxyStartupCover", schedule_start)
+    require(send_start != -1 and send_end != -1, "sendPendingTlsFrame body must be present")
+    require(schedule_start != -1 and schedule_end != -1, "scheduleMtProxyDataTimingIfNeeded body must be present")
+    send_body = socket_cpp[send_start:send_end]
+    schedule_body = socket_cpp[schedule_start:schedule_end]
+    discard_pos = send_body.find("outgoingByteStream->discard(pendingTlsPayloadSize);")
+    complete_count_pos = send_body.find("mtproxyTlsFrameCompletedCount++")
+    complete_log_pos = send_body.find("mtproxy_data tls_frame_complete")
+    clear_pos = send_body.find("clearPendingTlsFrame();")
+    timing_pos = send_body.find("nextTlsFrameWriteTime")
+    require(
+        discard_pos != -1 and clear_pos != -1 and discard_pos < clear_pos,
+        "FakeTLS data path must discard payload only after the full TLS frame was sent and before clearing the pending frame",
+    )
+    require(
+        discard_pos < complete_count_pos < clear_pos
+        and discard_pos < complete_log_pos < clear_pos,
+        "FakeTLS record-boundary diagnostics must be emitted only after payload discard and before clearing the completed TLS frame",
+    )
+    require(
+        "tls_frames_completed=%u" in socket_cpp,
+        "mtproxy_disconnect must include the completed FakeTLS frame count so long-session data-path drops remain diagnosable",
+    )
+    require(
+        clear_pos < timing_pos
+        and "timingMode != MT_PROXY_TIMING_OFF && pendingTlsFrame == nullptr && outgoingByteStream->hasData()" in send_body,
+        "data-aware IPT must be scheduled only after a complete TLS frame, never while a partial TLS frame is pending",
+    )
+    require(
+        "timingMode == MT_PROXY_TIMING_OFF || pendingTlsFrame != nullptr || nextTlsFrameWriteTime == 0" in schedule_body,
+        "data-aware IPT wait must be skipped while a TLS frame is pending or when no delay was scheduled",
     )
     for path in (STRINGS, STRINGS_RU):
         source = text(path)

@@ -291,18 +291,25 @@ public class ProxySettingsActivity extends BaseFragment {
                     SharedPreferences preferences = MessagesController.getGlobalMainSettings();
                     SharedPreferences.Editor editor = preferences.edit();
                     boolean saveForWssSocksUpstream = saveAsWssSocksUpstream && currentType == TYPE_SOCKS5;
-                    boolean reapplyWssTransport = false;
+                    if (saveForWssSocksUpstream) {
+                        editor.putBoolean("proxy_enabled", false);
+                        editor.putBoolean("proxy_enabled_calls", false);
+                        editor.commit();
+                        SharedConfig.saveWssSocksProxy(currentProxyInfo);
+                        ConnectionsManager.setProxySettings(false, "", 1080, "", "", "");
+                        ConnectionsManager.setWssTransportSettings();
+                        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                        finishFragment();
+                        return;
+                    }
                     boolean enabled;
                     if (addingNewProxy) {
                         SharedConfig.addProxy(currentProxyInfo);
                         SharedConfig.currentProxy = currentProxyInfo;
-                        enabled = !saveForWssSocksUpstream;
+                        enabled = true;
                         editor.putBoolean("proxy_enabled", enabled);
                     } else {
-                        enabled = !saveForWssSocksUpstream && preferences.getBoolean("proxy_enabled", false);
-                        if (saveForWssSocksUpstream) {
-                            editor.putBoolean("proxy_enabled", false);
-                        }
+                        enabled = preferences.getBoolean("proxy_enabled", false);
                         SharedConfig.saveProxyList();
                     }
                     if (addingNewProxy || SharedConfig.currentProxy == currentProxyInfo) {
@@ -311,16 +318,9 @@ public class ProxySettingsActivity extends BaseFragment {
                         editor.putString("proxy_user", currentProxyInfo.username);
                         editor.putInt("proxy_port", currentProxyInfo.port);
                         editor.putString("proxy_secret", currentProxyInfo.secret);
-                        if (saveForWssSocksUpstream) {
-                            reapplyWssTransport = true;
-                        } else {
-                            ConnectionsManager.setProxySettings(enabled, currentProxyInfo.address, currentProxyInfo.port, currentProxyInfo.username, currentProxyInfo.password, currentProxyInfo.secret);
-                        }
+                        ConnectionsManager.setProxySettings(enabled, currentProxyInfo.address, currentProxyInfo.port, currentProxyInfo.username, currentProxyInfo.password, currentProxyInfo.secret);
                     }
                     editor.commit();
-                    if (reapplyWssTransport) {
-                        ConnectionsManager.setWssTransportSettings();
-                    }
 
                     NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
 

@@ -102,6 +102,9 @@ private:
     bool startupCoverStartedLogged = false;
     bool startupCoverEndedLogged = false;
     std::string currentProxyTlsProfileKey;
+    std::string currentMtProxyEndpointKey;
+    std::string currentMtProxyNetworkEndpointKey;
+    std::string currentMtProxyDnsCacheKey;
     std::string proxyCheckDiagnostic = "tcp_not_connected";
 
     bool tlsHashMismatch = false;
@@ -129,6 +132,9 @@ private:
     bool mtproxyFirstTlsDataReceivedLogged = false;
     bool mtproxyFirstPlainDataSentLogged = false;
     bool mtproxyFirstPlainDataReceivedLogged = false;
+    int64_t mtproxyFirstPlainDataSentTime = 0;
+    int64_t mtproxyFirstDataReceivedTime = 0;
+    uint32_t mtproxyTlsFrameCompletedCount = 0;
     bool currentTransportWss = false;
     int32_t currentDatacenterId = 0;
     bool currentMediaConnection = false;
@@ -140,6 +146,10 @@ private:
     bool proxyHandshakeAdmissionQueued = false;
     bool proxyHandshakeAdmissionActive = false;
     bool proxyHandshakeAdmissionReady = false;
+    bool proxyEndpointBackoffReady = false;
+    bool proxyEndpointTcpConnectActive = false;
+    bool proxyEndpointTcpConnectReady = false;
+    bool proxyEndpointDnsCoalesceReady = false;
     bool proxyHandshakeAdmissionIpv6 = false;
     bool mtproxySocketConnectedLogged = false;
     uint32_t proxyHandshakeAdmissionGeneration = 0;
@@ -161,6 +171,17 @@ private:
     void requestPendingHostResolve();
     void cancelProxyHandshakeAdmission();
     void releaseProxyHandshakeAdmission(bool succeeded, const char *reason);
+    std::string mtProxyEndpointStateKeyForPhase(const std::string &phase);
+    void resetMtProxyEndpointStateForKey(const std::string &key, int64_t now, bool resetRecipe);
+    bool scheduleMtProxyEndpointCircuitBreakerIfNeeded(bool ipv6);
+    bool scheduleMtProxyEndpointTcpConnectGateIfNeeded(bool ipv6);
+    void releaseMtProxyEndpointTcpConnect(const char *reason);
+    bool scheduleMtProxyDnsCoalesceIfNeeded(bool ipv6);
+    void recordMtProxyEndpointFailure(const char *diagnostic, const char *reason);
+    void recordMtProxyEndpointSuccess(const char *reason);
+    bool mtProxyEndpointUseCachedHostAddress(const std::string &host, bool *ipv6);
+    void mtProxyEndpointStoreResolvedAddress(const std::string &host, const std::string &ip);
+    void applyMtProxyPhaseAdaptiveRecipe();
     void rotateMtProxyTlsProfileOnFailureIfNeeded(int32_t reason, int32_t error);
     void markProxyHandshakeClientHelloSent();
     void markProxyHandshakeFreezeIfNeeded();

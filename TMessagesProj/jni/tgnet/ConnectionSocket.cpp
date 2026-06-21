@@ -19,6 +19,7 @@
 #include <openssl/rand.h>
 #include <openssl/hmac.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <map>
 #include <utility>
@@ -61,6 +62,9 @@ static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_SERVER_HELLO = 3;
 static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_CLIENT_HELLO_FRAGMENT = 4;
 static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_TLS_FRAME = 5;
 static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_HOST_RESOLVE = 6;
+static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_ENDPOINT_BACKOFF = 7;
+static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_DNS_COALESCE = 8;
+static constexpr int32_t MT_PROXY_HANDSHAKE_TIMER_TCP_CONNECT_GATE = 9;
 static constexpr int32_t MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF = 0;
 static constexpr int32_t MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT = 1;
 static constexpr int32_t MT_PROXY_RECORD_SIZING_OFF = 0;
@@ -90,6 +94,12 @@ static constexpr int64_t MT_PROXY_HANDSHAKE_STRICT_FREEZE_COOLDOWN_MAX_MS = 2500
 static constexpr int64_t MT_PROXY_HANDSHAKE_BROWSER_FAILURE_COOLDOWN_MAX_MS = 8000;
 static constexpr int64_t MT_PROXY_HANDSHAKE_QUIET_FAILURE_COOLDOWN_MAX_MS = 5000;
 static constexpr int64_t MT_PROXY_HANDSHAKE_STRICT_FAILURE_COOLDOWN_MAX_MS = 12000;
+static constexpr int64_t MT_PROXY_ENDPOINT_DNS_CACHE_TTL_MS = 30 * 60 * 1000;
+static constexpr int64_t MT_PROXY_ENDPOINT_DNS_COALESCE_MS = 750;
+static constexpr int64_t MT_PROXY_ENDPOINT_TCP_CONNECT_GATE_MS = 650;
+static constexpr int64_t MT_PROXY_PLAIN_NO_RESPONSE_TIMEOUT_MS = 5500;
+static constexpr int64_t MT_PROXY_EARLY_APPDATA_DROP_MS = 2 * 60 * 1000;
+static constexpr int32_t MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL = 3;
 static constexpr int64_t MT_PROXY_STARTUP_COVER_SOFT_WINDOW_MS = 12000;
 static constexpr int64_t MT_PROXY_STARTUP_COVER_STRICT_WINDOW_MS = 20000;
 static constexpr uint32_t MT_PROXY_STARTUP_COVER_SOFT_FRAMES = 8;
@@ -104,10 +114,14 @@ static constexpr uint8_t MT_PROXY_TLS_RECORD_APPLICATION_DATA = 0x17;
 static bool mtProxyExtractSslipIpv4Address(const std::string &host, struct in_addr *address, std::string *literalAddress) {
     static const char suffix[] = ".sslip.io";
     static const size_t suffixLength = sizeof(suffix) - 1;
-    if (host.size() <= suffixLength || host.compare(host.size() - suffixLength, suffixLength, suffix) != 0) {
+    std::string hostKey = host;
+    std::transform(hostKey.begin(), hostKey.end(), hostKey.begin(), [](unsigned char c) {
+        return (char) ::tolower(c);
+    });
+    if (hostKey.size() <= suffixLength || hostKey.compare(hostKey.size() - suffixLength, suffixLength, suffix) != 0) {
         return false;
     }
-    std::string ipv4Address = host.substr(0, host.size() - suffixLength);
+    std::string ipv4Address = hostKey.substr(0, hostKey.size() - suffixLength);
     if (inet_pton(AF_INET, ipv4Address.c_str(), &address->s_addr) != 1) {
         return false;
     }
@@ -128,6 +142,33 @@ static const char *mtProxySecretKindName(const std::string &secret) {
         return "ee";
     }
     return "legacy";
+}
+
+static std::string mtProxyNetworkEndpointKeyFor(const std::string &host, uint16_t port) {
+    std::string hostKey = host;
+    std::transform(hostKey.begin(), hostKey.end(), hostKey.begin(), [](unsigned char c) {
+        return (char) ::tolower(c);
+    });
+    return hostKey + ":" + std::to_string((unsigned int) port);
+}
+
+static std::string mtProxyEndpointKeyFor(const std::string &host, uint16_t port, const char *secretKind, const std::string &domain) {
+    std::string key = host + ":" + std::to_string((unsigned int) port);
+    key += ":";
+    key += secretKind != nullptr ? secretKind : "unknown";
+    if (!domain.empty()) {
+        key += ":";
+        key += domain;
+    }
+    return key;
+}
+
+static std::string mtProxyDnsCacheKeyFor(const std::string &host, uint16_t port) {
+    std::string hostKey = host;
+    std::transform(hostKey.begin(), hostKey.end(), hostKey.begin(), [](unsigned char c) {
+        return (char) ::tolower(c);
+    });
+    return hostKey + ":" + std::to_string((unsigned int) port);
 }
 
 static const char *mtProxyDisconnectReasonName(int32_t reason) {
@@ -175,6 +216,28 @@ struct MtProxyHandshakeEndpointState {
 };
 
 static std::map<std::string, MtProxyHandshakeEndpointState> proxyHandshakeEndpoints;
+
+struct MtProxyEndpointResilienceState {
+    int64_t lastSuccessTime = 0;
+    int64_t cooldownUntil = 0;
+    int32_t hostResolveFailures = 0;
+    int32_t tcpFailures = 0;
+    int32_t handshakeFailures = 0;
+    int32_t plainNoResponseFailures = 0;
+    int32_t postHandshakeFailures = 0;
+    int32_t recipeLevel = 0;
+    int32_t activeTcpConnects = 0;
+};
+
+static std::map<std::string, MtProxyEndpointResilienceState> proxyEndpointResilience;
+
+struct MtProxyDnsCacheState {
+    std::string lastGoodIpv4;
+    int64_t lastGoodIpv4Time = 0;
+    int64_t resolveInFlightUntil = 0;
+};
+
+static std::map<std::string, MtProxyDnsCacheState> proxyEndpointDnsCache;
 
 struct MtProxyTlsAutoProfileState {
     int32_t profileIndex = -1;
@@ -578,6 +641,81 @@ static void mtProxyRecordHandshakeSuccess(MtProxyHandshakeEndpointState &state, 
     state.tcpFailurePenalty = 0;
     state.handshakeFailurePenalty = 0;
     state.cooldownUntil = 0;
+}
+
+static bool mtProxyEndpointFailureNeedsCooldown(const std::string &diagnostic) {
+    return diagnostic == "host_resolve_failed"
+           || diagnostic == "tcp_not_connected"
+           || diagnostic == "tcp_connected_no_pong"
+           || diagnostic == "client_hello_sent_no_server_hello"
+           || diagnostic == "server_hello_hmac_mismatch"
+           || diagnostic == "peer_closed_after_client_hello"
+           || diagnostic == "mtproxy_packet_sent_no_response"
+           || diagnostic == "post_handshake_no_appdata"
+           || diagnostic == "dropped_early_after_appdata";
+}
+
+static bool mtProxyEndpointFailureNeedsRecipe(const std::string &diagnostic) {
+    return diagnostic == "client_hello_sent_no_server_hello"
+           || diagnostic == "server_hello_hmac_mismatch"
+           || diagnostic == "peer_closed_after_client_hello"
+           || diagnostic == "post_handshake_no_appdata";
+}
+
+static int64_t mtProxyEndpointCooldownMs(MtProxyEndpointResilienceState &state, const std::string &diagnostic, int32_t mode) {
+    mode = normalizeMtProxyConnectionPatternMode(mode);
+    int32_t penalty = 1;
+    if (diagnostic == "host_resolve_failed") {
+        penalty = ++state.hostResolveFailures;
+        state.tcpFailures = 0;
+    } else if (diagnostic == "tcp_not_connected") {
+        penalty = ++state.tcpFailures;
+    } else if (diagnostic == "mtproxy_packet_sent_no_response" || diagnostic == "tcp_connected_no_pong") {
+        penalty = ++state.plainNoResponseFailures;
+    } else if (diagnostic == "post_handshake_no_appdata" || diagnostic == "dropped_early_after_appdata") {
+        penalty = ++state.postHandshakeFailures;
+    } else {
+        penalty = ++state.handshakeFailures;
+    }
+    if (penalty > 4) {
+        penalty = 4;
+    }
+
+    int64_t base;
+    int64_t jitter;
+    int64_t maxCooldown;
+    if (mode == MT_PROXY_CONNECTION_PATTERN_STRICT) {
+        base = 3500 + penalty * 2200;
+        jitter = secureRandomBounded(3001);
+        maxCooldown = 18000;
+    } else if (mode == MT_PROXY_CONNECTION_PATTERN_BROWSER) {
+        base = 2200 + penalty * 1600;
+        jitter = secureRandomBounded(2201);
+        maxCooldown = 14000;
+    } else if (mode == MT_PROXY_CONNECTION_PATTERN_QUIET) {
+        base = 1800 + penalty * 1200;
+        jitter = secureRandomBounded(1601);
+        maxCooldown = 10000;
+    } else {
+        base = 650 + penalty * 450;
+        jitter = secureRandomBounded(701);
+        maxCooldown = 4500;
+    }
+    int64_t cooldown = base + jitter;
+    if (cooldown > maxCooldown) {
+        cooldown = maxCooldown;
+    }
+    return cooldown;
+}
+
+static uint32_t mtProxyDataAwareIptDelayMs(int32_t timingMode) {
+    if (timingMode == MT_PROXY_TIMING_BALANCED) {
+        return 20 + secureRandomBounded(28) + secureRandomBounded(54);
+    }
+    if (timingMode == MT_PROXY_TIMING_GENTLE) {
+        return 8 + secureRandomBounded(14) + secureRandomBounded(25);
+    }
+    return 0;
 }
 
 #ifndef EPOLLRDHUP
@@ -1365,6 +1503,23 @@ static int32_t resolveMtProxyEffectiveTlsProfile(int32_t profile, const std::str
     return result;
 }
 
+static int32_t mtProxyEndpointAdaptiveTlsProfile(int32_t configuredProfile, int32_t effectiveProfile) {
+    configuredProfile = normalizeMtProxyTlsProfile(configuredProfile);
+    if (configuredProfile != MT_PROXY_TLS_PROFILE_AUTO && configuredProfile != MT_PROXY_TLS_PROFILE_AUTO_ROTATE) {
+        return effectiveProfile;
+    }
+    switch (normalizeMtProxyTlsProfile(effectiveProfile)) {
+        case MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID:
+            return MT_PROXY_TLS_PROFILE_ANDROID_OKHTTP;
+        case MT_PROXY_TLS_PROFILE_ANDROID_OKHTTP:
+            return MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID;
+        case MT_PROXY_TLS_PROFILE_ANDROID_CHROME:
+            return MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID;
+        default:
+            return MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID;
+    }
+}
+
 static bool mtProxyTlsAutoRotateFailureDiagnostic(const std::string &diagnostic) {
     if (diagnostic == "tcp_not_connected") {
         return false; // ClientHello was not sent, so JA4 did not cause this failure.
@@ -1372,9 +1527,7 @@ static bool mtProxyTlsAutoRotateFailureDiagnostic(const std::string &diagnostic)
     return diagnostic == "client_hello_sent_no_server_hello"
            || diagnostic == "server_hello_hmac_mismatch"
            || diagnostic == "post_handshake_no_appdata"
-           || diagnostic == "tcp_connected_no_pong"
-           || diagnostic == "peer_closed_after_client_hello"
-           || diagnostic == "dropped_after_appdata";
+           || diagnostic == "peer_closed_after_client_hello";
 }
 
 static void mtProxyRotateTlsProfileOnFailure(const std::string &key, const std::string &diagnostic, int32_t previousProfile) {
@@ -1594,6 +1747,45 @@ void ConnectionSocket::scheduleProxyHandshakeAdmissionTimer(uint32_t delay, int3
                 requestPendingHostResolve();
                 return;
             }
+            if (mode == MT_PROXY_HANDSHAKE_TIMER_ENDPOINT_BACKOFF) {
+                bool delayedIpv6 = proxyHandshakeAdmissionIpv6;
+                proxyEndpointBackoffReady = true;
+                if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup endpoint_backoff_timer_fire generation=%u", this, proxyHandshakeAdmissionGeneration);
+                if (!waitingForHostResolve.empty()) {
+                    requestPendingHostResolve();
+                    return;
+                }
+                openConnectionInternal(delayedIpv6);
+                return;
+            }
+            if (mode == MT_PROXY_HANDSHAKE_TIMER_DNS_COALESCE) {
+                bool delayedIpv6 = proxyHandshakeAdmissionIpv6;
+                proxyEndpointDnsCoalesceReady = true;
+                if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup dns_coalesce_timer_fire generation=%u", this, proxyHandshakeAdmissionGeneration);
+                if (!waitingForHostResolve.empty()) {
+                    bool cachedIpv6 = delayedIpv6;
+                    std::string host = waitingForHostResolve;
+                    if (mtProxyEndpointUseCachedHostAddress(host, &cachedIpv6)) {
+                        waitingForHostResolve = "";
+                        proxyEndpointDnsCoalesceReady = false;
+                        openConnectionInternal(cachedIpv6);
+                        return;
+                    }
+                    proxyEndpointDnsCoalesceReady = false;
+                    requestPendingHostResolve();
+                    return;
+                }
+                proxyEndpointDnsCoalesceReady = false;
+                openConnectionInternal(delayedIpv6);
+                return;
+            }
+            if (mode == MT_PROXY_HANDSHAKE_TIMER_TCP_CONNECT_GATE) {
+                bool delayedIpv6 = proxyHandshakeAdmissionIpv6;
+                proxyEndpointTcpConnectReady = true;
+                if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup tcp_connect_gate_timer_fire generation=%u", this, proxyHandshakeAdmissionGeneration);
+                openConnectionInternal(delayedIpv6);
+                return;
+            }
             if (mode == MT_PROXY_HANDSHAKE_TIMER_FREEZE) {
                 markProxyHandshakeFreezeIfNeeded();
                 return;
@@ -1648,6 +1840,9 @@ void ConnectionSocket::cancelProxyHandshakeAdmission() {
     proxyHandshakeAdmissionQueued = false;
     proxyHandshakeAdmissionActive = false;
     proxyHandshakeAdmissionReady = false;
+    proxyEndpointBackoffReady = false;
+    proxyEndpointTcpConnectReady = false;
+    proxyEndpointDnsCoalesceReady = false;
     proxyHandshakeAdmissionIpv6 = false;
     proxyHandshakeAdmissionTimerMode = 0;
     proxyHandshakeAdmissionGeneration++;
@@ -1737,6 +1932,302 @@ void ConnectionSocket::releaseProxyHandshakeAdmission(bool succeeded, const char
     if (hasNextRequest && nextRequest.socket != nullptr) {
         nextRequest.socket->grantProxyHandshakeAdmission(nextRequest.ipv6, nextRequest.generation, nextGrantDelay, nextRequest.timerMode, reason);
     }
+}
+
+bool ConnectionSocket::scheduleMtProxyEndpointCircuitBreakerIfNeeded(bool ipv6) {
+    if (!isCurrentMtProxyConnection() || (currentMtProxyEndpointKey.empty() && currentMtProxyNetworkEndpointKey.empty())) {
+        return false;
+    }
+    int32_t connectionPatternMode = normalizeMtProxyConnectionPatternMode(currentConnectionPatternMode);
+    if (proxyEndpointBackoffReady) {
+        proxyEndpointBackoffReady = false;
+        return false;
+    }
+
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    int64_t cooldownUntil = 0;
+    std::string cooldownKey;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    auto readCooldown = [&](const std::string &key) {
+        if (key.empty()) {
+            return;
+        }
+        auto it = proxyEndpointResilience.find(key);
+        if (it != proxyEndpointResilience.end() && it->second.cooldownUntil > cooldownUntil) {
+            cooldownUntil = it->second.cooldownUntil;
+            cooldownKey = key;
+        }
+    };
+    readCooldown(currentMtProxyNetworkEndpointKey);
+    readCooldown(currentMtProxyEndpointKey);
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    if (cooldownUntil <= now) {
+        return false;
+    }
+
+    int64_t cooldownDelay = cooldownUntil - now;
+    uint32_t delay = mtProxyHandshakeRetryDelay(now, cooldownUntil, proxyHandshakeAdmissionPriority, connectionPatternMode);
+    if (cooldownDelay > 0 && (int64_t) delay < cooldownDelay) {
+        delay = (uint32_t) cooldownDelay;
+    }
+    publishProxyConnectionStage("endpoint_cooldown");
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup endpoint_cooldown key=%s connection_pattern=%s priority=%d delay=%u cooldown_ms=%ld", this, cooldownKey.c_str(), mtProxyConnectionPatternModeName(connectionPatternMode), proxyHandshakeAdmissionPriority, delay, (long) (cooldownUntil - now));
+    scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_ENDPOINT_BACKOFF, ipv6);
+    return true;
+}
+
+bool ConnectionSocket::scheduleMtProxyEndpointTcpConnectGateIfNeeded(bool ipv6) {
+    if (!isCurrentMtProxyConnection() || currentMtProxyNetworkEndpointKey.empty()) {
+        return false;
+    }
+    if (proxyEndpointTcpConnectActive) {
+        return false;
+    }
+    bool wasReady = proxyEndpointTcpConnectReady;
+    proxyEndpointTcpConnectReady = false;
+
+    int32_t activeTcpConnects = 0;
+    bool shouldDelay = false;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    MtProxyEndpointResilienceState &state = proxyEndpointResilience[currentMtProxyNetworkEndpointKey];
+    activeTcpConnects = state.activeTcpConnects;
+    if (activeTcpConnects > 0) {
+        shouldDelay = true;
+    } else {
+        state.activeTcpConnects++;
+        activeTcpConnects = state.activeTcpConnects;
+        proxyEndpointTcpConnectActive = true;
+    }
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+
+    if (!shouldDelay) {
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup tcp_connect_gate_grant key=%s active=%d ready=%d", this, currentMtProxyNetworkEndpointKey.c_str(), activeTcpConnects, wasReady ? 1 : 0);
+        return false;
+    }
+
+    uint32_t delay = (uint32_t) (MT_PROXY_ENDPOINT_TCP_CONNECT_GATE_MS + secureRandomBounded(351));
+    publishProxyConnectionStage("tcp_connect_gate");
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup tcp_connect_gate key=%s active=%d delay=%u ready=%d", this, currentMtProxyNetworkEndpointKey.c_str(), activeTcpConnects, delay, wasReady ? 1 : 0);
+    scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_TCP_CONNECT_GATE, ipv6);
+    return true;
+}
+
+void ConnectionSocket::releaseMtProxyEndpointTcpConnect(const char *reason) {
+    if (!proxyEndpointTcpConnectActive || currentMtProxyNetworkEndpointKey.empty()) {
+        return;
+    }
+    int32_t activeTcpConnects = 0;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    MtProxyEndpointResilienceState &state = proxyEndpointResilience[currentMtProxyNetworkEndpointKey];
+    if (state.activeTcpConnects > 0) {
+        state.activeTcpConnects--;
+    }
+    activeTcpConnects = state.activeTcpConnects;
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    proxyEndpointTcpConnectActive = false;
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup tcp_connect_gate_release key=%s active=%d reason=%s", this, currentMtProxyNetworkEndpointKey.c_str(), activeTcpConnects, reason != nullptr ? reason : "unknown");
+}
+
+bool ConnectionSocket::scheduleMtProxyDnsCoalesceIfNeeded(bool ipv6) {
+    if (!isCurrentMtProxyConnection() || currentMtProxyDnsCacheKey.empty()) {
+        return false;
+    }
+    if (proxyEndpointDnsCoalesceReady) {
+        proxyEndpointDnsCoalesceReady = false;
+        return false;
+    }
+
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    int64_t resolveInFlightUntil = 0;
+    bool shouldDelay = false;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    MtProxyDnsCacheState &state = proxyEndpointDnsCache[currentMtProxyDnsCacheKey];
+    if (state.resolveInFlightUntil > now) {
+        resolveInFlightUntil = state.resolveInFlightUntil;
+        shouldDelay = true;
+    } else {
+        state.resolveInFlightUntil = now + MT_PROXY_ENDPOINT_DNS_COALESCE_MS;
+    }
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    if (!shouldDelay) {
+        return false;
+    }
+
+    uint32_t delay = (uint32_t) std::min<int64_t>(MT_PROXY_ENDPOINT_DNS_COALESCE_MS, std::max<int64_t>(50, resolveInFlightUntil - now));
+    publishProxyConnectionStage("dns_coalesce_wait");
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup dns_coalesce_wait dns_key=%s delay=%u", this, currentMtProxyDnsCacheKey.c_str(), delay);
+    scheduleProxyHandshakeAdmissionTimer(delay, MT_PROXY_HANDSHAKE_TIMER_DNS_COALESCE, ipv6);
+    return true;
+}
+
+std::string ConnectionSocket::mtProxyEndpointStateKeyForPhase(const std::string &phase) {
+    if ((phase == "host_resolve_failed"
+            || phase == "tcp_not_connected"
+            || phase == "tcp_connected_no_pong"
+            || phase == "mtproxy_packet_sent_no_response"
+            || phase == "dropped_early_after_appdata")
+            && !currentMtProxyNetworkEndpointKey.empty()) {
+        return currentMtProxyNetworkEndpointKey;
+    }
+    if (!currentMtProxyEndpointKey.empty()) {
+        return currentMtProxyEndpointKey;
+    }
+    return currentMtProxyNetworkEndpointKey;
+}
+
+void ConnectionSocket::resetMtProxyEndpointStateForKey(const std::string &key, int64_t now, bool resetRecipe) {
+    if (key.empty()) {
+        return;
+    }
+    MtProxyEndpointResilienceState &state = proxyEndpointResilience[key];
+    state.lastSuccessTime = now;
+    state.cooldownUntil = 0;
+    state.hostResolveFailures = 0;
+    state.tcpFailures = 0;
+    if (resetRecipe) {
+        state.handshakeFailures = 0;
+        state.plainNoResponseFailures = 0;
+        state.postHandshakeFailures = 0;
+        state.recipeLevel = 0;
+    }
+}
+
+void ConnectionSocket::recordMtProxyEndpointFailure(const char *diagnostic, const char *reason) {
+    if (!isCurrentMtProxyConnection() || (currentMtProxyEndpointKey.empty() && currentMtProxyNetworkEndpointKey.empty()) || diagnostic == nullptr || diagnostic[0] == '\0') {
+        return;
+    }
+    std::string phase = diagnostic;
+    if (!mtProxyEndpointFailureNeedsCooldown(phase) && !mtProxyEndpointFailureNeedsRecipe(phase)) {
+        return;
+    }
+    std::string stateKey = mtProxyEndpointStateKeyForPhase(phase);
+    if (stateKey.empty()) {
+        return;
+    }
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    int32_t connectionPatternMode = normalizeMtProxyConnectionPatternMode(currentConnectionPatternMode);
+    int64_t cooldown = 0;
+    int32_t recipeLevel = 0;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    MtProxyEndpointResilienceState &state = proxyEndpointResilience[stateKey];
+    if (mtProxyEndpointFailureNeedsCooldown(phase)) {
+        cooldown = mtProxyEndpointCooldownMs(state, phase, connectionPatternMode);
+        if (cooldown > 0 && state.cooldownUntil < now + cooldown) {
+            state.cooldownUntil = now + cooldown;
+        }
+    }
+    recipeLevel = state.recipeLevel;
+    if (currentSecretIsFakeTls && mtProxyEndpointFailureNeedsRecipe(phase) && !currentMtProxyEndpointKey.empty()) {
+        MtProxyEndpointResilienceState &recipeState = proxyEndpointResilience[currentMtProxyEndpointKey];
+        if (recipeState.recipeLevel < MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL) {
+            recipeState.recipeLevel++;
+        }
+        recipeLevel = recipeState.recipeLevel;
+    }
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup endpoint_failure key=%s phase=%s reason=%s connection_pattern=%s cooldown_ms=%ld recipe_level=%d", this, stateKey.c_str(), phase.c_str(), reason != nullptr ? reason : "unknown", mtProxyConnectionPatternModeName(connectionPatternMode), (long) cooldown, recipeLevel);
+}
+
+void ConnectionSocket::recordMtProxyEndpointSuccess(const char *reason) {
+    if (!isCurrentMtProxyConnection() || (currentMtProxyEndpointKey.empty() && currentMtProxyNetworkEndpointKey.empty())) {
+        return;
+    }
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    bool resetRecipe = reason == nullptr || strcmp(reason, "server_hello_hmac_ok") != 0;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    resetMtProxyEndpointStateForKey(currentMtProxyNetworkEndpointKey, now, false);
+    if (currentMtProxyEndpointKey != currentMtProxyNetworkEndpointKey) {
+        resetMtProxyEndpointStateForKey(currentMtProxyEndpointKey, now, resetRecipe);
+    } else if (resetRecipe) {
+        resetMtProxyEndpointStateForKey(currentMtProxyEndpointKey, now, true);
+    }
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup endpoint_success network_key=%s key=%s reason=%s", this, currentMtProxyNetworkEndpointKey.c_str(), currentMtProxyEndpointKey.c_str(), reason != nullptr ? reason : "unknown");
+}
+
+bool ConnectionSocket::mtProxyEndpointUseCachedHostAddress(const std::string &host, bool *ipv6) {
+    if (!isCurrentMtProxyConnection() || currentMtProxyDnsCacheKey.empty()) {
+        return false;
+    }
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    std::string cachedIpv4;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    auto it = proxyEndpointDnsCache.find(currentMtProxyDnsCacheKey);
+    if (it != proxyEndpointDnsCache.end()
+            && !it->second.lastGoodIpv4.empty()
+            && now - it->second.lastGoodIpv4Time <= MT_PROXY_ENDPOINT_DNS_CACHE_TTL_MS) {
+        cachedIpv4 = it->second.lastGoodIpv4;
+    }
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    if (cachedIpv4.empty() || inet_pton(AF_INET, cachedIpv4.c_str(), &socketAddress.sin_addr.s_addr) != 1) {
+        return false;
+    }
+    if (ipv6 != nullptr) {
+        *ipv6 = false;
+    }
+    publishProxyConnectionStage("dns_cache_hit");
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup dns_cache_hit dns_key=%s host=%s ip=%s", this, currentMtProxyDnsCacheKey.c_str(), host.c_str(), cachedIpv4.c_str());
+    return true;
+}
+
+void ConnectionSocket::mtProxyEndpointStoreResolvedAddress(const std::string &host, const std::string &ip) {
+    if (!isCurrentMtProxyConnection() || currentMtProxyDnsCacheKey.empty() || ip.empty()) {
+        return;
+    }
+    struct in_addr parsedAddress;
+    if (inet_pton(AF_INET, ip.c_str(), &parsedAddress.s_addr) != 1) {
+        return;
+    }
+    int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    MtProxyDnsCacheState &state = proxyEndpointDnsCache[currentMtProxyDnsCacheKey];
+    state.lastGoodIpv4 = ip;
+    state.lastGoodIpv4Time = now;
+    state.resolveInFlightUntil = 0;
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    publishProxyConnectionStage("dns_cache_store");
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup dns_cache_store dns_key=%s host=%s ip=%s", this, currentMtProxyDnsCacheKey.c_str(), host.c_str(), ip.c_str());
+}
+
+void ConnectionSocket::applyMtProxyPhaseAdaptiveRecipe() {
+    if (!currentSecretIsFakeTls || currentMtProxyEndpointKey.empty()) {
+        return;
+    }
+    int32_t recipeLevel = 0;
+    pthread_mutex_lock(&proxyHandshakeSchedulerMutex);
+    auto it = proxyEndpointResilience.find(currentMtProxyEndpointKey);
+    if (it != proxyEndpointResilience.end()) {
+        recipeLevel = it->second.recipeLevel;
+    }
+    pthread_mutex_unlock(&proxyHandshakeSchedulerMutex);
+    if (recipeLevel <= 0) {
+        return;
+    }
+    bool changed = false;
+    if (recipeLevel >= 1 && currentClientHelloFragmentation == MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF) {
+        currentClientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT;
+        changed = true;
+    }
+    if (recipeLevel >= 2) {
+        int32_t previousProfile = currentEffectiveProxyTlsProfile;
+        currentEffectiveProxyTlsProfile = mtProxyEndpointAdaptiveTlsProfile(currentProxyTlsProfile, currentEffectiveProxyTlsProfile);
+        if (currentEffectiveProxyTlsProfile != previousProfile) {
+            changed = true;
+        }
+    }
+    if (recipeLevel >= 3 && currentConnectionPatternMode != MT_PROXY_CONNECTION_PATTERN_STRICT) {
+        if (currentConnectionPatternMode == MT_PROXY_CONNECTION_PATTERN_OFF
+            || currentConnectionPatternMode == MT_PROXY_CONNECTION_PATTERN_SOFT
+            || currentConnectionPatternMode == MT_PROXY_CONNECTION_PATTERN_BROWSER) {
+            currentConnectionPatternMode = MT_PROXY_CONNECTION_PATTERN_QUIET;
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    publishProxyConnectionStage("phase_adaptive_recipe");
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup phase_adaptive_recipe key=%s level=%d fragment=%d effective_profile=%s connection_pattern=%s", this, currentMtProxyEndpointKey.c_str(), recipeLevel, currentClientHelloFragmentation, mtProxyTlsProfileName(currentEffectiveProxyTlsProfile), mtProxyConnectionPatternModeName(currentConnectionPatternMode));
 }
 
 void ConnectionSocket::markProxyHandshakeClientHelloSent() {
@@ -2058,14 +2549,19 @@ bool ConnectionSocket::sendPendingTlsFrame() {
             if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup first_tls_app_sent payload=%u frame=%u", this, pendingTlsPayloadSize, pendingTlsFrameSize);
         }
         outgoingByteStream->discard(pendingTlsPayloadSize);
-        if (mtProxyStartupCoverActive()) {
+        mtproxyTlsFrameCompletedCount++;
+        bool startupCoverActive = mtProxyStartupCoverActive();
+        if (LOGS_ENABLED && (mtproxyTlsFrameCompletedCount <= 8 || startupCoverActive)) {
+            DEBUG_D("connection(%p) mtproxy_data tls_frame_complete index=%u payload=%u frame=%u record_sizing=%d timing=%d startup_cover=%d more_data=%d", this, mtproxyTlsFrameCompletedCount, pendingTlsPayloadSize, pendingTlsFrameSize, (int) effectiveMtProxyRecordSizingMode(), (int) effectiveMtProxyTimingMode(), currentStartupCoverMode, outgoingByteStream->hasData() ? 1 : 0);
+        }
+        if (startupCoverActive) {
             startupCoverFrameCount++;
             mtProxyStartupCoverActive();
         }
         clearPendingTlsFrame();
         int32_t timingMode = effectiveMtProxyTimingMode();
-        if (timingMode != MT_PROXY_TIMING_OFF && outgoingByteStream->hasData()) {
-            uint32_t delay = timingMode == MT_PROXY_TIMING_GENTLE ? 10 + secureRandomBounded(31) : 25 + secureRandomBounded(76);
+        if (timingMode != MT_PROXY_TIMING_OFF && pendingTlsFrame == nullptr && outgoingByteStream->hasData()) {
+            uint32_t delay = mtProxyDataAwareIptDelayMs(timingMode);
             nextTlsFrameWriteTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis() + delay;
             if (LOGS_ENABLED) {
                 DEBUG_D("connection(%p) mtproxy_data timing_next mode=%d startup_cover=%d delay=%u", this, (int) timingMode, currentStartupCoverMode, delay);
@@ -2077,6 +2573,7 @@ bool ConnectionSocket::sendPendingTlsFrame() {
 }
 
 void ConnectionSocket::openConnection(std::string address, uint16_t port, std::string secret, bool ipv6, int32_t networkType, int32_t datacenterId, bool mediaConnection) {
+    releaseMtProxyEndpointTcpConnect("openConnection_reset");
     cancelProxyHandshakeAdmission();
     clearPendingClientHello();
     clearPendingTlsFrame();
@@ -2110,14 +2607,24 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
     startupCoverEndedLogged = false;
     nextTlsFrameWriteTime = 0;
     currentProxyTlsProfileKey = "";
+    currentMtProxyEndpointKey = "";
+    currentMtProxyNetworkEndpointKey = "";
+    currentMtProxyDnsCacheKey = "";
     proxyCheckDiagnostic = "tcp_not_connected";
     proxyHandshakeAdmissionKey = "";
+    proxyEndpointBackoffReady = false;
+    proxyEndpointTcpConnectActive = false;
+    proxyEndpointTcpConnectReady = false;
+    proxyEndpointDnsCoalesceReady = false;
     tlsState = 0;
     mtproxySocketConnectedLogged = false;
     mtproxyFirstTlsFrameSentLogged = false;
     mtproxyFirstTlsDataReceivedLogged = false;
     mtproxyFirstPlainDataSentLogged = false;
     mtproxyFirstPlainDataReceivedLogged = false;
+    mtproxyFirstPlainDataSentTime = 0;
+    mtproxyFirstDataReceivedTime = 0;
+    mtproxyTlsFrameCompletedCount = 0;
     ConnectionsManager::getInstance(instanceNum).attachConnection(this);
 
     memset(&socketAddress, 0, sizeof(sockaddr_in));
@@ -2289,18 +2796,30 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
             currentSecret = proxySecret->substr(1, 16);
             currentSecretDomain = proxySecret->substr(17);
             currentSecretIsFakeTls = true;
+            currentMtProxyDnsCacheKey = mtProxyDnsCacheKeyFor(*proxyAddress, proxyPort);
+            currentMtProxyNetworkEndpointKey = mtProxyNetworkEndpointKeyFor(*proxyAddress, proxyPort);
             currentProxyTlsProfile = normalizeMtProxyTlsProfile(proxyTlsProfile);
             currentProxyTlsProfileKey = *proxyAddress + ":" + std::to_string((unsigned int) proxyPort) + ":" + currentSecretDomain;
+            currentMtProxyEndpointKey = mtProxyEndpointKeyFor(*proxyAddress, proxyPort, currentSecretKind, currentSecretDomain);
             currentEffectiveProxyTlsProfile = resolveMtProxyEffectiveTlsProfile(currentProxyTlsProfile, currentProxyTlsProfileKey);
             currentClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(proxyClientHelloFragmentation);
             currentConnectionPatternMode = normalizeMtProxyConnectionPatternMode(proxyConnectionPatternMode);
             currentRecordSizingMode = normalizeMtProxyRecordSizingMode(proxyRecordSizingMode);
             currentTimingMode = normalizeMtProxyTimingMode(proxyTimingMode);
             currentStartupCoverMode = normalizeMtProxyStartupCoverMode(proxyStartupCoverMode);
+            applyMtProxyPhaseAdaptiveRecipe();
             proxyHandshakeAdmissionKey = *proxyAddress + ":" + std::to_string((unsigned int) proxyPort) + ":" + currentSecretDomain;
             tempBuffLength = 65 * 1024;
         } else {
             proxyAuthState = 0;
+            currentMtProxyDnsCacheKey = mtProxyDnsCacheKeyFor(*proxyAddress, proxyPort);
+            currentMtProxyNetworkEndpointKey = mtProxyNetworkEndpointKeyFor(*proxyAddress, proxyPort);
+            currentMtProxyEndpointKey = mtProxyEndpointKeyFor(*proxyAddress, proxyPort, currentSecretKind, "");
+            currentClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(proxyClientHelloFragmentation);
+            currentConnectionPatternMode = normalizeMtProxyConnectionPatternMode(proxyConnectionPatternMode);
+            currentRecordSizingMode = normalizeMtProxyRecordSizingMode(proxyRecordSizingMode);
+            currentTimingMode = normalizeMtProxyTimingMode(proxyTimingMode);
+            currentStartupCoverMode = normalizeMtProxyStartupCoverMode(proxyStartupCoverMode);
             tempBuffLength = 0;
         }
         if (tempBuffLength > 0) {
@@ -2337,10 +2856,19 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
                     if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup resolved_sslip host=%s address=%s", this, proxyAddress->c_str(), sslipAddress.c_str());
                 }
             }
+            if (continueCheckAddress && mtProxyEndpointUseCachedHostAddress(*proxyAddress, &ipv6)) {
+                continueCheckAddress = false;
+            }
             if (continueCheckAddress) {
 #ifdef USE_DELEGATE_HOST_RESOLVE
                 waitingForHostResolve = *proxyAddress;
+                if (isCurrentMtProxyConnection() && scheduleMtProxyEndpointCircuitBreakerIfNeeded(ipv6)) {
+                    return;
+                }
                 if (proxyAuthState >= 10 && scheduleProxyHandshakeAdmissionIfNeeded(ipv6, MT_PROXY_HANDSHAKE_TIMER_HOST_RESOLVE)) {
+                    return;
+                }
+                if (isCurrentMtProxyConnection() && scheduleMtProxyDnsCoalesceIfNeeded(ipv6)) {
                     return;
                 }
                 requestPendingHostResolve();
@@ -2358,6 +2886,10 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
                     socketAddress.sin_addr.s_addr = addr_list[0]->s_addr;
                     if (LOGS_ENABLED) DEBUG_D("connection(%p) resolved host %s address %x", this, proxyAddress->c_str(), addr_list[0]->s_addr);
                     ipv6 = false;
+                    char resolvedIp[INET_ADDRSTRLEN];
+                    if (inet_ntop(AF_INET, addr_list[0], resolvedIp, sizeof(resolvedIp)) != nullptr) {
+                        mtProxyEndpointStoreResolvedAddress(*proxyAddress, resolvedIp);
+                    }
                 } else {
                     proxyCheckDiagnostic = "host_resolve_failed";
                     if (LOGS_ENABLED) DEBUG_E("connection(%p) can't resolve host %s address", this, proxyAddress->c_str());
@@ -2398,18 +2930,30 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
             currentSecret = secret.substr(1, 16);
             currentSecretDomain = secret.substr(17);
             currentSecretIsFakeTls = true;
+            currentMtProxyNetworkEndpointKey = mtProxyNetworkEndpointKeyFor(address, port);
             currentProxyTlsProfile = normalizeMtProxyTlsProfile(ConnectionsManager::getInstance(instanceNum).proxyTlsProfile);
             currentProxyTlsProfileKey = address + ":" + std::to_string((unsigned int) port) + ":" + currentSecretDomain;
+            currentMtProxyEndpointKey = mtProxyEndpointKeyFor(address, port, currentSecretKind, currentSecretDomain);
             currentEffectiveProxyTlsProfile = resolveMtProxyEffectiveTlsProfile(currentProxyTlsProfile, currentProxyTlsProfileKey);
             currentClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(ConnectionsManager::getInstance(instanceNum).proxyClientHelloFragmentation);
             currentConnectionPatternMode = normalizeMtProxyConnectionPatternMode(ConnectionsManager::getInstance(instanceNum).proxyConnectionPatternMode);
             currentRecordSizingMode = normalizeMtProxyRecordSizingMode(ConnectionsManager::getInstance(instanceNum).proxyRecordSizingMode);
             currentTimingMode = normalizeMtProxyTimingMode(ConnectionsManager::getInstance(instanceNum).proxyTimingMode);
             currentStartupCoverMode = normalizeMtProxyStartupCoverMode(ConnectionsManager::getInstance(instanceNum).proxyStartupCoverMode);
+            applyMtProxyPhaseAdaptiveRecipe();
             proxyHandshakeAdmissionKey = address + ":" + std::to_string((unsigned int) port) + ":" + currentSecretDomain;
             tempBuffLength = 65 * 1024;
         } else {
             proxyAuthState = 0;
+            if (!secret.empty()) {
+                currentMtProxyNetworkEndpointKey = mtProxyNetworkEndpointKeyFor(address, port);
+                currentMtProxyEndpointKey = mtProxyEndpointKeyFor(address, port, currentSecretKind, "");
+                currentClientHelloFragmentation = normalizeMtProxyClientHelloFragmentation(ConnectionsManager::getInstance(instanceNum).proxyClientHelloFragmentation);
+                currentConnectionPatternMode = normalizeMtProxyConnectionPatternMode(ConnectionsManager::getInstance(instanceNum).proxyConnectionPatternMode);
+                currentRecordSizingMode = normalizeMtProxyRecordSizingMode(ConnectionsManager::getInstance(instanceNum).proxyRecordSizingMode);
+                currentTimingMode = normalizeMtProxyTimingMode(ConnectionsManager::getInstance(instanceNum).proxyTimingMode);
+                currentStartupCoverMode = normalizeMtProxyStartupCoverMode(ConnectionsManager::getInstance(instanceNum).proxyStartupCoverMode);
+            }
             tempBuffLength = 0;
         }
         if (tempBuffLength > 0) {
@@ -2434,6 +2978,12 @@ void ConnectionSocket::openConnection(std::string address, uint16_t port, std::s
 }
 
 void ConnectionSocket::openConnectionInternal(bool ipv6) {
+    if (isCurrentMtProxyConnection() && scheduleMtProxyEndpointCircuitBreakerIfNeeded(ipv6)) {
+        return;
+    }
+    if (isCurrentMtProxyConnection() && scheduleMtProxyEndpointTcpConnectGateIfNeeded(ipv6)) {
+        return;
+    }
     if (proxyAuthState >= 10) {
         if (scheduleProxyHandshakeAdmissionIfNeeded(ipv6, MT_PROXY_HANDSHAKE_TIMER_ADMISSION)) {
             return;
@@ -2537,6 +3087,7 @@ void ConnectionSocket::markMtProxyFirstPlainDataSent(uint32_t bytes) {
         return;
     }
     mtproxyFirstPlainDataSentLogged = true;
+    mtproxyFirstPlainDataSentTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
     proxyCheckDiagnostic = "mtproxy_packet_sent_no_response";
     publishProxyConnectionStage("first_mtproxy_packet_sent");
     if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup first_mtproxy_packet_sent bytes=%u secret_kind=%s", this, bytes, currentSecretKind);
@@ -2547,8 +3098,11 @@ void ConnectionSocket::markMtProxyFirstPlainDataReceived(uint32_t bytes) {
         return;
     }
     mtproxyFirstPlainDataReceivedLogged = true;
+    mtproxyFirstPlainDataSentTime = 0;
+    mtproxyFirstDataReceivedTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
     proxyCheckDiagnostic = "dropped_after_appdata";
     publishProxyConnectionStage("first_mtproxy_packet_recv");
+    recordMtProxyEndpointSuccess("first_mtproxy_packet_recv");
     if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup first_mtproxy_packet_recv bytes=%u secret_kind=%s", this, bytes, currentSecretKind);
 }
 
@@ -2567,11 +3121,20 @@ void ConnectionSocket::rotateMtProxyTlsProfileOnFailureIfNeeded(int32_t reason, 
 
 void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
     lastEventTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
-    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect reason=%d reason_text=%s error=%d error_text=%s secret_kind=%s is_faketls=%d is_wss=%d proxy_state=%d tls_state=%d bytes_read=%zu pending_hello=%u/%u pending=%u/%u first_tls_sent=%d first_tls_recv=%d first_plain_sent=%d first_plain_recv=%d", this, reason, mtProxyDisconnectReasonName(reason), error, mtProxySocketErrorName(error), currentSecretKind, currentSecretIsFakeTls ? 1 : 0, currentTransportWss ? 1 : 0, (int) proxyAuthState, (int) tlsState, bytesRead, pendingClientHelloOffset, pendingClientHelloSize, pendingTlsFrameOffset, pendingTlsFrameSize, mtproxyFirstTlsFrameSentLogged ? 1 : 0, mtproxyFirstTlsDataReceivedLogged ? 1 : 0, mtproxyFirstPlainDataSentLogged ? 1 : 0, mtproxyFirstPlainDataReceivedLogged ? 1 : 0);
+    if (reason != 0
+            && isCurrentMtProxyConnection()
+            && proxyCheckDiagnostic == "dropped_after_appdata"
+            && mtproxyFirstDataReceivedTime > 0
+            && lastEventTime - mtproxyFirstDataReceivedTime <= MT_PROXY_EARLY_APPDATA_DROP_MS) {
+        proxyCheckDiagnostic = "dropped_early_after_appdata";
+    }
+    if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect reason=%d reason_text=%s error=%d error_text=%s secret_kind=%s is_faketls=%d is_wss=%d proxy_state=%d tls_state=%d bytes_read=%zu pending_hello=%u/%u pending=%u/%u first_tls_sent=%d first_tls_recv=%d first_plain_sent=%d first_plain_recv=%d tls_frames_completed=%u", this, reason, mtProxyDisconnectReasonName(reason), error, mtProxySocketErrorName(error), currentSecretKind, currentSecretIsFakeTls ? 1 : 0, currentTransportWss ? 1 : 0, (int) proxyAuthState, (int) tlsState, bytesRead, pendingClientHelloOffset, pendingClientHelloSize, pendingTlsFrameOffset, pendingTlsFrameSize, mtproxyFirstTlsFrameSentLogged ? 1 : 0, mtproxyFirstTlsDataReceivedLogged ? 1 : 0, mtproxyFirstPlainDataSentLogged ? 1 : 0, mtproxyFirstPlainDataReceivedLogged ? 1 : 0, mtproxyTlsFrameCompletedCount);
     rotateMtProxyTlsProfileOnFailureIfNeeded(reason, error);
+    releaseMtProxyEndpointTcpConnect("closeSocket");
     if (reason != 0 && isCurrentMtProxyConnection() && !proxyCheckDiagnostic.empty()) {
         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup close_diagnostic phase=%s", this, proxyCheckDiagnostic.c_str());
         publishProxyConnectionStage(proxyCheckDiagnostic.c_str());
+        recordMtProxyEndpointFailure(proxyCheckDiagnostic.c_str(), "closeSocket");
     }
     releaseProxyHandshakeAdmission(false, "closeSocket");
     cancelProxyHandshakeAdmission();
@@ -2821,6 +3384,7 @@ void ConnectionSocket::onEvent(uint32_t events) {
                         serverHelloHmacMismatchObserved = false;
                         serverHelloHmacMismatchTime = 0;
                         publishProxyConnectionStage("server_hello_hmac_ok");
+                        recordMtProxyEndpointSuccess("server_hello_hmac_ok");
                         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup server_hello_hmac_ok bytes=%zu len1=%zu len2=%zu flight=%zu extra=%zu", this, matchedBytes, len1, len2, appFlightBytes, newBytesRead - matchedBytes);
                         releaseProxyHandshakeAdmission(true, "server_hello_hmac_ok");
                         proxyCheckDiagnostic = "post_handshake_no_appdata";
@@ -2950,8 +3514,10 @@ void ConnectionSocket::onEvent(uint32_t events) {
                                         if (tlsBufferRecordType == MT_PROXY_TLS_RECORD_APPLICATION_DATA) {
                                             if (!mtproxyFirstTlsDataReceivedLogged) {
                                                 mtproxyFirstTlsDataReceivedLogged = true;
+                                                mtproxyFirstDataReceivedTime = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
                                                 proxyCheckDiagnostic = "dropped_after_appdata";
                                                 publishProxyConnectionStage("first_tls_app_recv");
+                                                recordMtProxyEndpointSuccess("first_tls_app_recv");
                                                 if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup first_tls_app_recv payload=%d", this, tlsBuffer->limit());
                                             }
                                             onReceivedData(tlsBuffer);
@@ -3009,6 +3575,7 @@ void ConnectionSocket::onEvent(uint32_t events) {
                 mtproxySocketConnectedLogged = true;
                 proxyCheckDiagnostic = "tcp_connected_no_pong";
                 publishProxyConnectionStage("socket_connected");
+                releaseMtProxyEndpointTcpConnect("socket_connected");
                 if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup socket_connected state=%d tls=%d secret_kind=%s", this, (int) proxyAuthState, (int) tlsState, currentSecretKind);
             }
             if (proxyAuthState != 0) {
@@ -3215,6 +3782,18 @@ time_t ConnectionSocket::getTimeout() {
 }
 
 bool ConnectionSocket::checkTimeout(int64_t now) {
+    if (isCurrentMtProxyConnection()
+        && !currentSecretIsFakeTls
+        && mtproxyFirstPlainDataSentLogged
+        && !mtproxyFirstPlainDataReceivedLogged
+        && mtproxyFirstPlainDataSentTime > 0
+        && proxyCheckDiagnostic == "mtproxy_packet_sent_no_response"
+        && now - mtproxyFirstPlainDataSentTime > MT_PROXY_PLAIN_NO_RESPONSE_TIMEOUT_MS) {
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup mtproxy_packet_no_response_timeout elapsed=%lld", this, (long long) (now - mtproxyFirstPlainDataSentTime));
+        publishProxyConnectionStage(proxyCheckDiagnostic.c_str());
+        closeSocket(2, 0);
+        return true;
+    }
     if (timeout != 0 && (now - lastEventTime) > (int64_t) timeout * 1000) {
         if (!onConnectedSent || hasPendingRequests()) {
             closeSocket(2, 0);
@@ -3271,6 +3850,12 @@ void ConnectionSocket::requestPendingHostResolve() {
     }
     ConnectionsManager &manager = ConnectionsManager::getInstance(instanceNum);
     if (manager.delegate == nullptr) {
+        bool cachedIpv6 = false;
+        if (mtProxyEndpointUseCachedHostAddress(waitingForHostResolve, &cachedIpv6)) {
+            waitingForHostResolve = "";
+            openConnectionInternal(cachedIpv6);
+            return;
+        }
         proxyCheckDiagnostic = "host_resolve_failed";
         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup host_resolve_failed host=%s reason=no_delegate", this, waitingForHostResolve.c_str());
         closeSocket(1, -1);
@@ -3288,6 +3873,11 @@ void ConnectionSocket::onHostNameResolved(std::string host, std::string ip, bool
         if (waitingForHostResolve == host) {
             waitingForHostResolve = "";
             if (ip.empty() || inet_pton(AF_INET, ip.c_str(), &socketAddress.sin_addr.s_addr) != 1) {
+                bool cachedIpv6 = ipv6;
+                if (mtProxyEndpointUseCachedHostAddress(host, &cachedIpv6)) {
+                    openConnectionInternal(cachedIpv6);
+                    return;
+                }
                 proxyCheckDiagnostic = "host_resolve_failed";
                 publishProxyConnectionStage(proxyCheckDiagnostic.c_str());
                 if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup host_resolve_failed host=%s ip=%s", this, host.c_str(), ip.c_str());
@@ -3295,6 +3885,7 @@ void ConnectionSocket::onHostNameResolved(std::string host, std::string ip, bool
                 closeSocket(1, -1);
                 return;
             }
+            mtProxyEndpointStoreResolvedAddress(host, ip);
             if (LOGS_ENABLED) DEBUG_D("connection(%p) resolved host %s address %s via delegate", this, host.c_str(), ip.c_str());
             openConnectionInternal(ipv6);
         }

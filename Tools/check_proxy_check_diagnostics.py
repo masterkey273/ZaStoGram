@@ -25,6 +25,12 @@ FILES = {
 REQUIRED_PHASES = [
     "ok",
     "checking",
+    "endpoint_cooldown",
+    "tcp_connect_gate",
+    "dns_coalesce_wait",
+    "dns_cache_hit",
+    "dns_cache_store",
+    "phase_adaptive_recipe",
     "start_failed",
     "host_resolve_failed",
     "tcp_not_connected",
@@ -33,6 +39,7 @@ REQUIRED_PHASES = [
     "server_hello_hmac_mismatch",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
+    "dropped_early_after_appdata",
     "dropped_after_appdata",
     "cancelled",
     "unknown_fail",
@@ -100,7 +107,8 @@ def main():
     require(
         "host_resolve_failed" in text("analyzer")
         and "tcp_connected_no_pong" in text("analyzer")
-        and "client_hello_sent_no_server_hello" in text("analyzer"),
+        and "client_hello_sent_no_server_hello" in text("analyzer")
+        and "dropped_early_after_appdata" in text("analyzer"),
         "log analyzer must use the same diagnostic phase names as the GUI",
     )
     require("-1001" not in combined and "-1002" not in combined, "diagnostics must not use magic negative IDs")

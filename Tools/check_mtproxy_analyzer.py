@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import csv
 import subprocess
 import sys
 import tempfile
@@ -65,9 +66,27 @@ def main():
         handle.write("logcat.txt:12: connection(0x2) mtproxy_startup client_hello_sent bytes=1897\n")
         handle.write("logcat.txt:13: connection(0x2) mtproxy_startup server_hello_hmac_ok bytes=2219 len1=1210 len2=993 flight=993 extra=0\n")
         handle.write("logcat.txt:14: connection(0x2) mtproxy_startup on_connected tls=1\n")
+        handle.write("logcat.txt:14: connection(0x2) mtproxy_data tls_frame_complete index=1 payload=96 frame=101 record_sizing=1 timing=1 startup_cover=1 more_data=1\n")
         handle.write("logcat.txt:15: connection(0x2) mtproxy_startup first_tls_app_recv payload=105\n")
+        handle.write("logcat.txt:15: connection(0x2) mtproxy_disconnect reason=2 reason_text=peer_closed error=0 error_text=ok secret_kind=ee is_faketls=1 is_wss=0 proxy_state=0 tls_state=0 bytes_read=512 pending_hello=0/0 pending=0/0 first_tls_sent=1 first_tls_recv=1 first_plain_sent=0 first_plain_recv=0 tls_frames_completed=3\n")
         handle.write("logcat.txt:15: proxy_connection_stage account=0 phase=client_hello_sent\n")
         handle.write("logcat.txt:15: proxy_connection_stage account=0 phase=server_hello_hmac_ok\n")
+        handle.write(
+            "logcat.txt:15: 06-20 15:00:01.000 connection(0x5) mtproxy_startup connect_start proxy_state=10 secret_kind=ee "
+            "is_faketls=1 domain_len=17 profile=android_chrome connection_pattern=strict address=198.51.100.55 port=443\n"
+        )
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup socket_connect_start ipv6=0 state=10\n")
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup socket_connected elapsed=80\n")
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup client_hello_sent bytes=1897\n")
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup server_hello_hmac_ok bytes=2219 len1=1210 len2=993 flight=993 extra=0\n")
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup on_connected tls=1\n")
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup first_tls_app_recv payload=105\n")
+        handle.write("logcat.txt:15: connection(0x5) mtproxy_startup close_diagnostic phase=dropped_early_after_appdata\n")
+        handle.write(
+            "logcat.txt:15: 06-20 15:00:01.500 connection(0x6) mtproxy_startup connect_start proxy_state=10 secret_kind=ee "
+            "is_faketls=1 domain_len=17 profile=android_chrome connection_pattern=strict address=198.51.100.66 port=443\n"
+        )
+        handle.write("logcat.txt:15: connection(0x6) mtproxy_startup host_resolve_failed host=blocked-dns.example reason=no_delegate\n")
         handle.write(
             "logcat.txt:16: proxy_check_start state=ping_sent ping_id=1 request_token=1 "
             "address=dead.example:443 connection_num=0\n"
@@ -96,6 +115,22 @@ def main():
             "logcat.txt:25: proxy_check_finish result=ok reason=pong request_found=1 "
             "ping_id=3 address=ok.example:443 connection_num=0 state=finished\n"
         )
+        handle.write("logcat.txt:25: proxy_check_scheduler enqueue endpoint=dead.example:443 queued=1\n")
+        handle.write("logcat.txt:25: proxy_check_scheduler start endpoint=dead.example:443 queued=0\n")
+        handle.write(
+            "logcat.txt:25: proxy_check_scheduler finish result=fail phase=tcp_not_connected "
+            "diagnostic=network_block_suspected time=-1 applied_time=-1 raw_time=-1 "
+            "endpoint=dead.example:443 queued=0 cancelled=false listeners=1\n"
+        )
+        handle.write(
+            "logcat.txt:25: proxy_check_scheduler backoff endpoint=dead.example:443 "
+            "wait_ms=120000 failures=2 phase=network_block_suspected source=proxy_check\n"
+        )
+        handle.write(
+            "logcat.txt:25: proxy_check_scheduler skip_backoff endpoint=dead.example:443 "
+            "wait_ms=119000 phase=network_block_suspected\n"
+        )
+        handle.write("logcat.txt:25: proxy_check_scheduler finish_keep_connected endpoint=ok.example:443\n")
         handle.write(
             "logcat.txt:26: 06-20 15:00:02.000 connection(0x3, account0, dc2, type 1) connecting "
             "(149.154.167.51:443)\n"
@@ -147,11 +182,70 @@ def main():
             )
             attempts_csv = Path(csv_dir) / "mtproxy_attempts.csv"
             endpoint_csv = Path(csv_dir) / "mtproxy_endpoint_profile_stats.csv"
+            proxy_check_csv = Path(csv_dir) / "mtproxy_proxy_check_stats.csv"
+            scheduler_csv = Path(csv_dir) / "mtproxy_scheduler_stats.csv"
             require(attempts_csv.exists(), "analyzer must write per-attempt CSV when --out-dir is passed")
             require(endpoint_csv.exists(), "analyzer must write endpoint/profile stats CSV when --out-dir is passed")
+            require(proxy_check_csv.exists(), "analyzer must write proxy-check endpoint stats CSV when --out-dir is passed")
+            require(scheduler_csv.exists(), "analyzer must write Java scheduler endpoint stats CSV when --out-dir is passed")
+            endpoint_csv_text = endpoint_csv.read_text(encoding="utf-8")
+            proxy_check_csv_text = proxy_check_csv.read_text(encoding="utf-8")
+            scheduler_csv_text = scheduler_csv.read_text(encoding="utf-8")
             require(
-                "blocked.example:443" in endpoint_csv.read_text(encoding="utf-8"),
+                "blocked.example:443" in endpoint_csv_text,
                 "endpoint/profile CSV must include FakeTLS endpoint names",
+            )
+            require(
+                "early_drop" in endpoint_csv_text.splitlines()[0],
+                "endpoint/profile CSV must expose early_drop as a compact aggregate column",
+            )
+            require(
+                "tls_frames_completed" in endpoint_csv_text.splitlines()[0],
+                "endpoint/profile CSV must expose completed FakeTLS record count for data-path diagnosis",
+            )
+            rows = list(csv.DictReader(endpoint_csv_text.splitlines()))
+            blocked_row = next((row for row in rows if row["endpoint"] == "blocked.example:443" and row["profile"] == "android_chrome"), None)
+            require(
+                blocked_row is not None and blocked_row["tls_frames_completed"] == "3",
+                "endpoint/profile CSV must prefer the final disconnect FakeTLS record count when per-frame markers are sampled",
+            )
+            early_drop_row = next((row for row in rows if row["endpoint"] == "198.51.100.55:443" and row["profile"] == "android_chrome"), None)
+            require(
+                early_drop_row is not None and early_drop_row["early_drop"] == "1",
+                "endpoint/profile CSV must count early post-appdata drops in the compact early_drop column",
+            )
+            proxy_check_rows = list(csv.DictReader(proxy_check_csv_text.splitlines()))
+            dead_proxy_row = next((row for row in proxy_check_rows if row["endpoint"] == "dead.example:443"), None)
+            frozen_proxy_row = next((row for row in proxy_check_rows if row["endpoint"] == "frozen.example:443"), None)
+            ok_proxy_row = next((row for row in proxy_check_rows if row["endpoint"] == "ok.example:443"), None)
+            require(
+                dead_proxy_row is not None and dead_proxy_row["tcp_not_connected"] == "1",
+                "proxy-check CSV must expose endpoint TCP-open failures separately from FakeTLS attempts",
+            )
+            require(
+                frozen_proxy_row is not None and frozen_proxy_row["tcp_connected_no_pong"] == "1",
+                "proxy-check CSV must expose endpoint post-TCP/no-pong failures",
+            )
+            require(
+                ok_proxy_row is not None and ok_proxy_row["ok"] == "1",
+                "proxy-check CSV must expose endpoint pong successes",
+            )
+            scheduler_rows = list(csv.DictReader(scheduler_csv_text.splitlines()))
+            dead_scheduler_row = next((row for row in scheduler_rows if row["endpoint"] == "dead.example:443"), None)
+            ok_scheduler_row = next((row for row in scheduler_rows if row["endpoint"] == "ok.example:443"), None)
+            require(
+                dead_scheduler_row is not None
+                and dead_scheduler_row["enqueue"] == "1"
+                and dead_scheduler_row["start"] == "1"
+                and dead_scheduler_row["finish_fail"] == "1"
+                and dead_scheduler_row["backoff"] == "1"
+                and dead_scheduler_row["skip_backoff"] == "1"
+                and dead_scheduler_row["phase_network_block_suspected"] == "3",
+                "scheduler CSV must expose endpoint queue/start/fail/backoff phases for diagnosing retry storms",
+            )
+            require(
+                ok_scheduler_row is not None and ok_scheduler_row["finish_keep_connected"] == "1",
+                "scheduler CSV must expose preserved-connected outcomes separately from failures",
             )
     finally:
         marker_path.unlink(missing_ok=True)
@@ -170,8 +264,20 @@ def main():
         "analyzer must classify a connected ClientHello timeout as a pre-ServerHello failure",
     )
     require(
+        "dropped_early_after_appdata: 1" in result.stdout,
+        "analyzer must classify quick drops after first app data as a distinct post-handshake endpoint/lifecycle phase",
+    )
+    require(
         "FakeTLS reliability:" in result.stdout and "ok_rate=" in result.stdout,
         "analyzer must print profile reliability percentages for comparing profiles",
+    )
+    require(
+        "early_drop=1" in result.stdout,
+        "analyzer profile reliability summary must expose early post-appdata drops as a first-class counter",
+    )
+    require(
+        "tls_frames=3" in result.stdout,
+        "analyzer profile reliability summary must prefer final disconnect FakeTLS record counts over sampled per-frame markers",
     )
     require(
         "Endpoint handshake bursts:" in result.stdout,
@@ -180,6 +286,10 @@ def main():
     require(
         "By connection pattern:" in result.stdout and "strict:" in result.stdout,
         "analyzer must summarize FakeTLS attempts by connection-pattern mode",
+    )
+    require(
+        result.stdout.count("  By connection pattern:") == 1,
+        "analyzer must not print the connection-pattern section header twice",
     )
     require(
         "patterns=strict=" in result.stdout,
@@ -204,12 +314,40 @@ def main():
         "analyzer must summarize FakeTLS phase verdicts by endpoint",
     )
     require(
+        "198.51.100.55:443 dropped_early_after_appdata: 1" in result.stdout,
+        "analyzer must include early post-appdata drops in endpoint phase summaries",
+    )
+    require(
         "plain.example:443 android_chrome" not in result.stdout,
         "plain dd MTProxy attempts must not be reported in FakeTLS endpoint/profile phases",
     )
     require(
         "Plain MTProxy lifecycle:" in result.stdout,
         "analyzer must summarize non-FakeTLS MTProxy traffic separately from FakeTLS",
+    )
+    require(
+        "Layer recommendations:" in result.stdout,
+        "analyzer must print phase-to-layer recommendations so TCP/DNS, ClientHello, dd, and data-path failures are not confused",
+    )
+    require(
+        "dns_endpoint_stability host_resolve_failed=1" in result.stdout
+        and "proxy_check_tcp_not_connected=1" in result.stdout
+        and "proxy_check_tcp_connected_no_pong=1" in result.stdout
+        and "not_ja4_or_drs" in result.stdout,
+        "analyzer recommendations must route native and proxy-check DNS/TCP failures to endpoint stability, not JA4/DRS",
+    )
+    require(
+        "faketls_handshake_recipe client_hello_sent_no_server_hello=1" in result.stdout,
+        "analyzer recommendations must route pre-ServerHello failures to the phase-adaptive FakeTLS recipe",
+    )
+    require(
+        "plain_dd_endpoint_backoff mtproxy_packet_sent_no_response=1" in result.stdout
+        and "dd_no_ja4" in result.stdout,
+        "analyzer recommendations must route dd no-response to endpoint backoff/fallback, not FakeTLS JA4",
+    )
+    require(
+        "faketls_data_path post_handshake_no_appdata=0 dropped_early_after_appdata=1 tls_frames_completed=3" in result.stdout,
+        "analyzer recommendations must use completed FakeTLS records to identify post-handshake data-path failures",
     )
     require(
         "plain.example:443 dd account0 dc2 type1: socket_connected=1 connected=1 first_packet_sent=1 first_packet_recv=1 packet_sent_no_response=0 send=1 recv=1 rpc_result=1" in result.stdout,

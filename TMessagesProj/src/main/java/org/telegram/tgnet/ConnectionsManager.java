@@ -40,6 +40,7 @@ import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.ProxyCheckDiagnostics;
+import org.telegram.messenger.ProxyCheckScheduler;
 import org.telegram.messenger.PushListenerController;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.StatsController;
@@ -889,16 +890,22 @@ public class ConnectionsManager extends BaseController {
             boolean concreteDiagnostic = ProxyCheckDiagnostics.isLivePhase(normalizedDiagnostic)
                     || (ProxyCheckDiagnostics.isFailure(normalizedDiagnostic) && !ProxyCheckDiagnostics.UNKNOWN_FAIL.equals(normalizedDiagnostic));
             if (currentProxy != null && concreteDiagnostic) {
-                if (!ProxyCheckDiagnostics.shouldKeepFreshFailure(currentProxy, normalizedDiagnostic)) {
+                if (ProxyCheckDiagnostics.isProxyUsableSuccessPhase(normalizedDiagnostic)) {
+                    ProxyCheckScheduler.markConnectionUsable(currentProxy, normalizedDiagnostic);
+                } else if (!ProxyCheckDiagnostics.shouldKeepFreshFailure(currentProxy, normalizedDiagnostic)) {
                     currentProxy.lastCheckDiagnostic = normalizedDiagnostic;
                     currentProxy.lastCheckDiagnosticTime = SystemClock.elapsedRealtime();
                 } else if (BuildVars.LOGS_ENABLED) {
                     FileLog.d("proxy_connection_stage_held account=" + currentAccount + " phase=" + normalizedDiagnostic + " held_by=" + currentProxy.lastCheckDiagnostic);
                 }
+                if (ProxyCheckDiagnostics.shouldAccelerateProxyRotation(normalizedDiagnostic)) {
+                    ProxyCheckScheduler.markEndpointFailure(currentProxy, normalizedDiagnostic);
+                }
             }
             if (BuildVars.LOGS_ENABLED) {
                 FileLog.d("proxy_connection_stage account=" + currentAccount + " phase=" + normalizedDiagnostic);
             }
+            NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxyConnectionStageChanged, normalizedDiagnostic);
             AccountInstance.getInstance(currentAccount).getNotificationCenter().postNotificationName(NotificationCenter.proxyConnectionStageChanged, normalizedDiagnostic);
         });
     }
@@ -1080,20 +1087,21 @@ public class ConnectionsManager extends BaseController {
     private static WssSocksProxy resolveWssSocksProxy(int mode) {
         WssSocksProxy proxy = new WssSocksProxy();
         SharedConfig.loadProxyList();
-        if (mode == WSS_TRANSPORT_OFF || SharedConfig.currentProxy == null) {
+        SharedConfig.ProxyInfo selectedProxy = SharedConfig.currentWssSocksProxy;
+        if (mode == WSS_TRANSPORT_OFF || selectedProxy == null) {
             return proxy;
         }
-        if (!TextUtils.isEmpty(SharedConfig.currentProxy.secret) || TextUtils.isEmpty(SharedConfig.currentProxy.address)) {
+        if (!TextUtils.isEmpty(selectedProxy.secret) || TextUtils.isEmpty(selectedProxy.address)) {
             return proxy;
         }
-        int port = SharedConfig.currentProxy.port;
+        int port = selectedProxy.port;
         if (port <= 0 || port > 65535) {
             return proxy;
         }
-        proxy.host = SharedConfig.currentProxy.address;
+        proxy.host = selectedProxy.address;
         proxy.port = port;
-        proxy.username = SharedConfig.currentProxy.username != null ? SharedConfig.currentProxy.username : "";
-        proxy.password = SharedConfig.currentProxy.password != null ? SharedConfig.currentProxy.password : "";
+        proxy.username = selectedProxy.username != null ? selectedProxy.username : "";
+        proxy.password = selectedProxy.password != null ? selectedProxy.password : "";
         proxy.enabled = true;
         return proxy;
     }

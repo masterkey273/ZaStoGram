@@ -57,7 +57,7 @@ def main() -> None:
     require("WSS_TRANSPORT_OFFICIAL" in connections and "setWssTransportSettings" in connections, "Java ConnectionsManager must expose WSS constants and setter")
     require("native_setWssTransportSettings" in connections, "Java must wire WSS settings into JNI separately from proxy settings")
     require("resolveWssTransportMode" in connections, "Java must normalize WSS mode before native calls")
-    require("resolveWssSocksProxy" in connections and "SharedConfig.currentProxy.secret" in connections and "mode == WSS_TRANSPORT_OFF" in connections and "mode != WSS_TRANSPORT_SOCKS5" not in connections, "WSS must reuse the selected SOCKS5 proxy for every enabled WSS mode and ignore MTProxy secrets")
+    require("resolveWssSocksProxy" in connections and "SharedConfig.currentWssSocksProxy" in connections and "mode == WSS_TRANSPORT_OFF" in connections and "mode != WSS_TRANSPORT_SOCKS5" not in connections, "WSS must reuse the selected SOCKS5 upstream for every enabled WSS mode and ignore MTProxy secrets")
     require("wssSocksHost" in connections and "wssSocksUsername" in connections and "wssSocksPassword" in connections, "Java WSS settings must pass selected SOCKS5 upstream credentials separately from WSS gateway settings")
 
     require("wssTransportModeRow" in proxy_list and "wssCustomGatewayRow" in proxy_list, "Proxy list UI must show a separate WSS transport section")
@@ -72,7 +72,8 @@ def main() -> None:
     require("disableLegacyProxyForWss" in proxy_list and "ConnectionsManager.setProxySettings(false" in proxy_list, "enabling WSS must disable the legacy proxy connection path so MTProxy cannot keep connecting")
     require("isWssTransportSelected()" in proxy_list and "useProxyRow = -1" in proxy_list and "mtProxySoftMuxRow = -1" in proxy_list, "proxy UI must hide legacy proxy toggles and MTProxy tuning while WSS transport is selected")
     require("if (wssTransportSelected)" in proxy_list and "isPlainSocksProxy" in proxy_list and "wss_socks_upstream" in proxy_list, "WSS UI must keep the SOCKS5 proxy list visible for every WSS mode while filtering out MTProxy entries")
-    require("SharedConfig.currentProxy == currentInfo && (useProxySettings || isWssTransportSelected())" in proxy_list, "WSS SOCKS selection status must not depend on legacy proxy_enabled")
+    require("isProxyActiveForCurrentMode(currentInfo)" in proxy_list and "SharedConfig.currentWssSocksProxy == info" in proxy_list, "WSS SOCKS selection status must not depend on legacy proxy_enabled")
+    require("clearSelectedWssSocksProxy" in proxy_list and "SharedConfig.currentWssSocksProxy == info" in proxy_list, "clicking the selected WSS SOCKS upstream again must clear it instead of leaving a stuck upstream selected")
     require("actionBar.setSubtitle(getString(R.string.WssTransportHeader)" in proxy_list and "ProxyCheckDiagnostics.headerStatusText" in proxy_list, "proxy UI header must show WSS status instead of legacy proxy status while WSS is selected")
     require("isWssTransportSelected()" in proxy_list and "isPlainSocksProxy" in proxy_list, "proxy UI must expose selected SOCKS5 proxies for every WSS mode without showing MTProxy entries")
     require("WssSocksUpstreamHeader" in proxy_list and "WssSocksUpstreamInfo" in proxy_list, "proxy UI must label the SOCKS5 list as WSS upstream, not as the legacy proxy mode")
@@ -109,7 +110,8 @@ def main() -> None:
 
     require("applyMiniAppWssProxyIfNeeded" in bot_webview and "wssUseForMiniApps" in bot_webview, "Bot miniapp WebView must have an explicit hook for WSS proxy routing")
     mini_bridge = text(ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/WssMiniAppProxyBridge.java")
-    require("SharedConfig.wssTransportMode == SharedConfig.TRANSPORT_WSS_SOCKS5" not in mini_bridge and "mode == SharedConfig.TRANSPORT_WSS_CUSTOM" in mini_bridge and "selectedSocksProxy().enabled" in mini_bridge, "miniapp WSS proxy must be an on/off toggle that reuses the selected SOCKS upstream")
+    selected_socks_section = mini_bridge.split("private static SocksProxyConfig selectedSocksProxy()", 1)[1].split("public static int ensureStarted()", 1)[0]
+    require("SharedConfig.wssTransportMode == SharedConfig.TRANSPORT_WSS_SOCKS5" not in mini_bridge and "mode == SharedConfig.TRANSPORT_WSS_CUSTOM" in mini_bridge and "selectedSocksProxy().enabled" in mini_bridge and "SharedConfig.currentWssSocksProxy" in selected_socks_section and "SharedConfig.currentProxy" not in selected_socks_section, "miniapp WSS proxy must be an on/off toggle that reuses the selected WSS SOCKS upstream")
     require("direct_upstream_connect_ok" in mini_bridge and "readRawSocksGreetingResponse" in mini_bridge and "bridgeRaw" in mini_bridge, "miniapp toggle must support official WSS with selected SOCKS without pretending official WSS is a SOCKS gateway")
 
     for path in (STRINGS, STRINGS_RU):

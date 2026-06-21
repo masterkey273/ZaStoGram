@@ -237,7 +237,7 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
         }
 
         public void updateStatus() {
-            boolean currentProxyEnabled = SharedConfig.currentProxy == currentInfo && (useProxySettings || isWssTransportSelected());
+            boolean currentProxyEnabled = isProxyActiveForCurrentMode(currentInfo);
             int colorKey = ProxyCheckDiagnostics.statusColorKey(currentInfo, currentProxyEnabled, currentConnectionState);
             valueTextView.setText(ProxyCheckDiagnostics.statusText(currentInfo, currentProxyEnabled, currentConnectionState));
             color = Theme.getColor(colorKey);
@@ -367,8 +367,8 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.proxyChangedByRotation);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.proxySettingsChanged);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.proxyCheckDone);
+        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.proxyConnectionStageChanged);
         NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.didUpdateConnectionState);
-        NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.proxyConnectionStageChanged);
 
         final SharedPreferences preferences = MessagesController.getGlobalMainSettings();
         useProxySettings = preferences.getBoolean("proxy_enabled", false) && !SharedConfig.proxyList.isEmpty();
@@ -386,8 +386,8 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.proxyChangedByRotation);
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.proxySettingsChanged);
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.proxyCheckDone);
+        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.proxyConnectionStageChanged);
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.didUpdateConnectionState);
-        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.proxyConnectionStageChanged);
         ProxyCheckScheduler.cancelOwner(this);
     }
 
@@ -466,6 +466,9 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
                 editor.putBoolean("proxy_enabled", useProxySettings);
                 editor.commit();
 
+                if (useProxySettings) {
+                    ProxyCheckScheduler.markConnectionStarting(SharedConfig.currentProxy);
+                }
                 ConnectionsManager.setProxySettings(useProxySettings, SharedConfig.currentProxy.address, SharedConfig.currentProxy.port, SharedConfig.currentProxy.username, SharedConfig.currentProxy.password, SharedConfig.currentProxy.secret);
                 NotificationCenter.getGlobalInstance().removeObserver(ProxyListActivity.this, NotificationCenter.proxySettingsChanged);
                 NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
@@ -521,12 +524,17 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
                 if (isWssTransportSelected()) {
                     useProxySettings = false;
                     useProxyForCalls = false;
-                    saveSelectedProxy(info, false);
+                    boolean clearSelectedSocks = SharedConfig.currentWssSocksProxy == info;
+                    if (clearSelectedSocks) {
+                        clearSelectedWssSocksProxy();
+                    } else {
+                        saveSelectedWssSocksProxy(info);
+                    }
                     for (int a = proxyStartRow; a < proxyEndRow; a++) {
                         RecyclerListView.Holder holder = (RecyclerListView.Holder) listView.findViewHolderForAdapterPosition(a);
                         if (holder != null) {
                             TextDetailProxyCell cell = (TextDetailProxyCell) holder.itemView;
-                            cell.setChecked(cell.currentInfo == info);
+                            cell.setChecked(isProxySelectedForCurrentMode(cell.currentInfo));
                             cell.updateStatus();
                         }
                     }
@@ -561,6 +569,7 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
                     TextCheckCell textCheckCell = (TextCheckCell) holder.itemView;
                     textCheckCell.setChecked(true);
                 }
+                ProxyCheckScheduler.markConnectionStarting(SharedConfig.currentProxy);
                 ConnectionsManager.setProxySettings(useProxySettings, SharedConfig.currentProxy.address, SharedConfig.currentProxy.port, SharedConfig.currentProxy.username, SharedConfig.currentProxy.password, SharedConfig.currentProxy.secret);
             } else if (position == proxyAddRow) {
                 presentFragment(isWssTransportSelected() ? ProxySettingsActivity.createWssSocksUpstream() : new ProxySettingsActivity());
@@ -705,6 +714,7 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
 
     private void reapplyCurrentProxySettings() {
         if (useProxySettings && SharedConfig.currentProxy != null) {
+            ProxyCheckScheduler.markConnectionStarting(SharedConfig.currentProxy);
             ConnectionsManager.setProxySettings(true, SharedConfig.currentProxy.address, SharedConfig.currentProxy.port, SharedConfig.currentProxy.username, SharedConfig.currentProxy.password, SharedConfig.currentProxy.secret);
         }
     }
@@ -749,6 +759,15 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
         SharedConfig.saveProxyList();
     }
 
+    private void saveSelectedWssSocksProxy(SharedConfig.ProxyInfo info) {
+        disableLegacyProxyForWss();
+        SharedConfig.saveWssSocksProxy(info);
+    }
+
+    private void clearSelectedWssSocksProxy() {
+        SharedConfig.clearWssSocksProxy();
+    }
+
     private int getWssTransportModeIndex() {
         int currentMode = getEffectiveWssTransportMode();
         for (int i = 0; i < WSS_TRANSPORT_OPTIONS.length; i++) {
@@ -788,6 +807,20 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
 
     private boolean isPlainSocksProxy(SharedConfig.ProxyInfo info) {
         return info != null && TextUtils.isEmpty(info.secret);
+    }
+
+    private boolean isProxySelectedForCurrentMode(SharedConfig.ProxyInfo info) {
+        if (isWssTransportSelected()) {
+            return SharedConfig.currentWssSocksProxy == info;
+        }
+        return SharedConfig.currentProxy == info;
+    }
+
+    private boolean isProxyActiveForCurrentMode(SharedConfig.ProxyInfo info) {
+        if (isWssTransportSelected()) {
+            return SharedConfig.currentWssSocksProxy == info;
+        }
+        return SharedConfig.currentProxy == info && useProxySettings;
     }
 
     private String[] getMtProxyTlsProfileOptionLabels() {
@@ -994,16 +1027,17 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
 
             boolean isChecking = checking;
             Collections.sort(proxyList, (o1, o2) -> {
-                long bias1 = SharedConfig.currentProxy == o1 ? -200000 : 0;
+                SharedConfig.ProxyInfo selectedProxy = wssTransportSelected ? SharedConfig.currentWssSocksProxy : SharedConfig.currentProxy;
+                long bias1 = selectedProxy == o1 ? -200000 : 0;
                 if (!o1.available) {
                     bias1 += 100000;
                 }
-                long bias2 = SharedConfig.currentProxy == o2 ? -200000 : 0;
+                long bias2 = selectedProxy == o2 ? -200000 : 0;
                 if (!o2.available) {
                     bias2 += 100000;
                 }
-                return Long.compare(isChecking && o1 != SharedConfig.currentProxy ? SharedConfig.proxyList.indexOf(o1) * 10000L : o1.ping + bias1,
-                        isChecking && o2 != SharedConfig.currentProxy ? SharedConfig.proxyList.indexOf(o2) * 10000L : o2.ping + bias2);
+                return Long.compare(isChecking && o1 != selectedProxy ? SharedConfig.proxyList.indexOf(o1) * 10000L : o1.ping + bias1,
+                        isChecking && o2 != selectedProxy ? SharedConfig.proxyList.indexOf(o2) * 10000L : o2.ping + bias2);
             });
         }
 
@@ -1066,10 +1100,11 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
 
     private void updateCurrentProxyStatusCell() {
         updateProxyActionBarStatus();
-        if (listView == null || SharedConfig.currentProxy == null || proxyStartRow < 0) {
+        SharedConfig.ProxyInfo selectedProxy = isWssTransportSelected() ? SharedConfig.currentWssSocksProxy : SharedConfig.currentProxy;
+        if (listView == null || selectedProxy == null || proxyStartRow < 0) {
             return;
         }
-        int idx = proxyList.indexOf(SharedConfig.currentProxy);
+        int idx = proxyList.indexOf(selectedProxy);
         if (idx < 0) {
             return;
         }
@@ -1081,11 +1116,12 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
     }
 
     private void markConnectedCurrentProxyIfNeeded() {
-        if ((!useProxySettings && !isWssTransportSelected()) || SharedConfig.currentProxy == null) {
+        SharedConfig.ProxyInfo selectedProxy = isWssTransportSelected() ? SharedConfig.currentWssSocksProxy : SharedConfig.currentProxy;
+        if ((!useProxySettings && !isWssTransportSelected()) || selectedProxy == null) {
             return;
         }
         if (currentConnectionState == ConnectionsManager.ConnectionStateConnected || currentConnectionState == ConnectionsManager.ConnectionStateUpdating) {
-            ProxyCheckScheduler.markConnected(SharedConfig.currentProxy);
+            ProxyCheckScheduler.markConnected(selectedProxy);
         }
     }
 
@@ -1108,7 +1144,7 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
                 RecyclerView.ViewHolder holder = listView.getChildViewHolder(view);
                 if (holder.itemView instanceof TextDetailProxyCell) {
                     TextDetailProxyCell cell = (TextDetailProxyCell) holder.itemView;
-                    cell.setChecked(cell.currentInfo == SharedConfig.currentProxy);
+                    cell.setChecked(isProxySelectedForCurrentMode(cell.currentInfo));
                     cell.updateStatus();
                 }
             });
@@ -1126,8 +1162,9 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
                 currentConnectionState = state;
                 markConnectedCurrentProxyIfNeeded();
                 updateProxyActionBarStatus();
-                if (listView != null && SharedConfig.currentProxy != null) {
-                    int idx = proxyList.indexOf(SharedConfig.currentProxy);
+                SharedConfig.ProxyInfo selectedProxy = isWssTransportSelected() ? SharedConfig.currentWssSocksProxy : SharedConfig.currentProxy;
+                if (listView != null && selectedProxy != null) {
+                    int idx = proxyList.indexOf(selectedProxy);
                     if (idx >= 0) {
                         RecyclerListView.Holder holder = (RecyclerListView.Holder) listView.findViewHolderForAdapterPosition(idx + proxyStartRow);
                         if (holder != null) {
@@ -1305,7 +1342,7 @@ public class ProxyListActivity extends BaseFragment implements NotificationCente
                     TextDetailProxyCell cell = (TextDetailProxyCell) holder.itemView;
                     SharedConfig.ProxyInfo info = proxyList.get(position - proxyStartRow);
                     cell.setProxy(info);
-                    cell.setChecked(SharedConfig.currentProxy == info);
+                    cell.setChecked(isProxySelectedForCurrentMode(info));
                     cell.setItemSelected(selectedItems.contains(proxyList.get(position - proxyStartRow)), false);
                     cell.setSelectionEnabled(!selectedItems.isEmpty(), false);
                     break;

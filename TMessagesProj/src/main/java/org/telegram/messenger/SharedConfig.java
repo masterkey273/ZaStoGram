@@ -335,6 +335,7 @@ public class SharedConfig {
     public static int wssPort = 443;
     public static String wssPath = "/apiws";
     public static boolean wssUseForMiniApps;
+    public static ProxyInfo currentWssSocksProxy;
     public static int messageSeenHintCount;
     public static int emojiInteractionsHintCount;
     public static int dayNightThemeSwitchHintCount;
@@ -1515,6 +1516,16 @@ public class SharedConfig {
         LocaleController.resetImperialSystemType();
     }
 
+    private static boolean samePlainSocksProxy(ProxyInfo info, String address, int port, String username, String password) {
+        return info != null
+                && TextUtils.isEmpty(info.secret)
+                && !TextUtils.isEmpty(address)
+                && address.equals(info.address)
+                && port == info.port
+                && username.equals(info.username)
+                && password.equals(info.password);
+    }
+
     public static void loadProxyList() {
         if (proxyListLoaded) {
             return;
@@ -1525,10 +1536,29 @@ public class SharedConfig {
         String proxyPassword = preferences.getString("proxy_pass", "");
         String proxySecret = preferences.getString("proxy_secret", "");
         int proxyPort = preferences.getInt("proxy_port", 1080);
+        boolean proxyEnabled = preferences.getBoolean("proxy_enabled", false);
+        String wssSocksAddress = preferences.getString("wss_socks_proxy_ip", "");
+        String wssSocksUsername = preferences.getString("wss_socks_proxy_user", "");
+        String wssSocksPassword = preferences.getString("wss_socks_proxy_pass", "");
+        int wssSocksPort = preferences.getInt("wss_socks_proxy_port", 1080);
+        if ((wssSocksPort <= 0 || wssSocksPort > 65535) && !TextUtils.isEmpty(wssSocksAddress)) {
+            wssSocksPort = 1080;
+        }
+        if (TextUtils.isEmpty(wssSocksAddress)
+                && !TextUtils.isEmpty(proxyAddress)
+                && TextUtils.isEmpty(proxySecret)
+                && !proxyEnabled
+                && wssTransportMode != TRANSPORT_LEGACY_PROXY) {
+            wssSocksAddress = proxyAddress;
+            wssSocksUsername = proxyUsername;
+            wssSocksPassword = proxyPassword;
+            wssSocksPort = proxyPort;
+        }
 
         proxyListLoaded = true;
         proxyList.clear();
         currentProxy = null;
+        currentWssSocksProxy = null;
         String list = preferences.getString("proxy_list", null);
         if (!TextUtils.isEmpty(list)) {
             byte[] bytes = Base64.decode(list, Base64.DEFAULT);
@@ -1567,6 +1597,9 @@ public class SharedConfig {
                                 currentProxy = info;
                             }
                         }
+                        if (currentWssSocksProxy == null && samePlainSocksProxy(info, wssSocksAddress, wssSocksPort, wssSocksUsername, wssSocksPassword)) {
+                            currentWssSocksProxy = info;
+                        }
                     }
                 } else {
                     FileLog.e("Unknown proxy schema version: " + version);
@@ -1585,6 +1618,9 @@ public class SharedConfig {
                             currentProxy = info;
                         }
                     }
+                    if (currentWssSocksProxy == null && samePlainSocksProxy(info, wssSocksAddress, wssSocksPort, wssSocksUsername, wssSocksPassword)) {
+                        currentWssSocksProxy = info;
+                    }
                 }
             }
             data.cleanup();
@@ -1593,16 +1629,29 @@ public class SharedConfig {
             ProxyInfo info = currentProxy = new ProxyInfo(proxyAddress, proxyPort, proxyUsername, proxyPassword, proxySecret);
             proxyList.add(0, info);
         }
+        if (currentWssSocksProxy == null && samePlainSocksProxy(currentProxy, wssSocksAddress, wssSocksPort, wssSocksUsername, wssSocksPassword)) {
+            currentWssSocksProxy = currentProxy;
+        }
+        if (currentWssSocksProxy == null && !TextUtils.isEmpty(wssSocksAddress)) {
+            ProxyInfo info = currentWssSocksProxy = new ProxyInfo(wssSocksAddress, wssSocksPort, wssSocksUsername, wssSocksPassword, "");
+            proxyList.add(0, info);
+        }
     }
 
     public static void saveProxyList() {
         List<ProxyInfo> infoToSerialize = new ArrayList<>(proxyList);
         Collections.sort(infoToSerialize, (o1, o2) -> {
             long bias1 = SharedConfig.currentProxy == o1 ? -200000 : 0;
+            if (SharedConfig.currentWssSocksProxy == o1) {
+                bias1 -= 100000;
+            }
             if (!o1.available) {
                 bias1 += 100000;
             }
             long bias2 = SharedConfig.currentProxy == o2 ? -200000 : 0;
+            if (SharedConfig.currentWssSocksProxy == o2) {
+                bias2 -= 100000;
+            }
             if (!o2.available) {
                 bias2 += 100000;
             }
@@ -1648,6 +1697,36 @@ public class SharedConfig {
         return proxyInfo;
     }
 
+    public static void saveWssSocksProxy(ProxyInfo proxyInfo) {
+        loadProxyList();
+        if (proxyInfo == null || TextUtils.isEmpty(proxyInfo.address) || !TextUtils.isEmpty(proxyInfo.secret)) {
+            clearWssSocksProxy();
+            return;
+        }
+        if (proxyInfo.port <= 0 || proxyInfo.port > 65535) {
+            proxyInfo.port = 1080;
+        }
+        ProxyInfo savedInfo = addProxy(proxyInfo);
+        currentWssSocksProxy = savedInfo;
+        SharedPreferences.Editor editor = MessagesController.getGlobalMainSettings().edit();
+        editor.putString("wss_socks_proxy_ip", savedInfo.address);
+        editor.putString("wss_socks_proxy_pass", savedInfo.password != null ? savedInfo.password : "");
+        editor.putString("wss_socks_proxy_user", savedInfo.username != null ? savedInfo.username : "");
+        editor.putInt("wss_socks_proxy_port", savedInfo.port);
+        editor.apply();
+        saveProxyList();
+    }
+
+    public static void clearWssSocksProxy() {
+        currentWssSocksProxy = null;
+        SharedPreferences.Editor editor = MessagesController.getGlobalMainSettings().edit();
+        editor.putString("wss_socks_proxy_ip", "");
+        editor.putString("wss_socks_proxy_pass", "");
+        editor.putString("wss_socks_proxy_user", "");
+        editor.putInt("wss_socks_proxy_port", 1080);
+        editor.apply();
+    }
+
     public static boolean isProxyEnabled() {
         return MessagesController.getGlobalMainSettings().getBoolean("proxy_enabled", false) && currentProxy != null;
     }
@@ -1669,6 +1748,10 @@ public class SharedConfig {
             if (enabled) {
                 ConnectionsManager.setProxySettings(false, "", 0, "", "", "");
             }
+        }
+        if (currentWssSocksProxy == proxyInfo) {
+            clearWssSocksProxy();
+            ConnectionsManager.setWssTransportSettings();
         }
         proxyList.remove(proxyInfo);
         saveProxyList();

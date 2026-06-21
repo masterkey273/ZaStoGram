@@ -63,12 +63,39 @@ def main() -> None:
         'publishProxyConnectionStage("first_mtproxy_packet_sent")' in mark_sent,
         "dd/plain MTProxy should still expose first packet send as a live stage",
     )
+    require(
+        "mtproxyFirstPlainDataSentTime" in mark_sent
+        and "getCurrentTimeMonotonicMillis()" in mark_sent,
+        "dd/plain MTProxy should timestamp the first packet for a phase-specific timeout",
+    )
+
+    timeout_block = slice_between(socket_cpp, "bool ConnectionSocket::checkTimeout", "bool ConnectionSocket::hasTlsHashMismatch")
+    require(
+        "MT_PROXY_PLAIN_NO_RESPONSE_TIMEOUT_MS" in socket_cpp,
+        "dd/plain MTProxy no-response timeout must be explicit",
+    )
+    require(
+        "mtproxyFirstPlainDataSentLogged" in timeout_block
+        and "!mtproxyFirstPlainDataReceivedLogged" in timeout_block
+        and "!currentSecretIsFakeTls" in timeout_block
+        and 'proxyCheckDiagnostic == "mtproxy_packet_sent_no_response"' in timeout_block,
+        "dd/plain MTProxy should close early only after first packet send and before first reply",
+    )
+    require(
+        "mtproxy_packet_no_response_timeout" in timeout_block
+        and "closeSocket(2, 0)" in timeout_block,
+        "dd/plain MTProxy no-response timeout should be logged and close as timeout",
+    )
 
     for text, name in ((diagnostics, "ProxyCheckDiagnostics"), (analyzer, "analyzer")):
         require(
             "mtproxy_packet_sent_no_response" in text,
             f"{name} must know mtproxy_packet_sent_no_response",
         )
+    require(
+        '"mtproxy_packet_no_response_timeout": "mtproxy_packet_sent_no_response"' in analyzer,
+        "analyzer must fold the native timeout marker into the shared dd no-response phase",
+    )
     require(
         "MTPROXY_PACKET_SENT_NO_RESPONSE" in diagnostics
         and "ProxyStatusMtproxyPacketSentNoResponse" in diagnostics,

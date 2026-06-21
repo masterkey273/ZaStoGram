@@ -72,9 +72,16 @@ def main() -> None:
     require(
         "client_hello_sent_no_server_hello" in socket_cpp
         and "server_hello_hmac_mismatch" in socket_cpp
-        and "post_handshake_no_appdata" in socket_cpp
-        and "tcp_connected_no_pong" in socket_cpp,
+        and "post_handshake_no_appdata" in socket_cpp,
         "native rotation must be keyed by semantic diagnostic phases, not numeric errors",
+    )
+    rotation_start = socket_cpp.find("static bool mtProxyTlsAutoRotateFailureDiagnostic")
+    rotation_end = socket_cpp.find("static void mtProxyRotateTlsProfileOnFailure", rotation_start)
+    rotation_body = socket_cpp[rotation_start:rotation_end]
+    require(
+        "tcp_connected_no_pong" not in rotation_body
+        and "dropped_after_appdata" not in rotation_body,
+        "JA4 rotation must not react to plain-ping or already-after-appdata failures; those belong to endpoint/data lifecycle",
     )
     require(
         "tcp_not_connected" in socket_cpp
@@ -86,6 +93,15 @@ def main() -> None:
         and "getMtProxySoftMuxUploadConnectionType" in connections
         and "isMtProxySoftMuxEnabled" in connections,
         "ConnectionsManager must expose a runtime soft mux connection-slot policy for MTProxy",
+    )
+    soft_mux_start = connections.find("private static boolean isMtProxySoftMuxEnabled()")
+    soft_mux_end = connections.find("public static int getMtProxySoftMuxDownloadConnectionType", soft_mux_start)
+    soft_mux_body = connections[soft_mux_start:soft_mux_end]
+    require(
+        'preferences.getString("proxy_secret", "")' in soft_mux_body
+        and '"\\xee"' not in soft_mux_body
+        and "MT_PROXY_TLS_PROFILE" not in soft_mux_body,
+        "soft mux must apply to every MTProxy secret, including dd/legacy, not only ee FakeTLS",
     )
     require(
         "mtProxySoftMux" in shared_config

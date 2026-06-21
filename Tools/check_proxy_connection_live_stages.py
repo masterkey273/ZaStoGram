@@ -78,16 +78,27 @@ def main() -> None:
     status_idx = diagnostics.find("public static String statusText")
     status_live_idx = diagnostics.find("if (hasFreshLivePhase(proxyInfo))", status_idx)
     status_failure_idx = diagnostics.find("if (hasFreshFailure(proxyInfo))", status_idx)
+    status_connected_idx = diagnostics.find("currentConnectionState == ConnectionsManager.ConnectionStateConnected", status_idx)
     status_connecting_idx = diagnostics.find("currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy", status_idx)
     header_failure_idx = diagnostics.find("if (hasFreshFailure(proxyInfo))", header_idx)
+    header_connected_idx = diagnostics.find("currentConnectionState == ConnectionsManager.ConnectionStateConnected", header_idx)
     header_connecting_idx = diagnostics.find("currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy", header_idx)
     require(
         status_idx >= 0
         and status_live_idx >= 0
         and status_failure_idx >= 0
-        and status_live_idx < status_failure_idx
-        and header_live_idx < header_failure_idx,
-        "current proxy live stages must override stale proxy-check failures in row and header text",
+        and status_failure_idx < status_live_idx
+        and header_failure_idx < header_live_idx,
+        "current proxy terminal failures must override live stages in row and header text",
+    )
+    require(
+        status_failure_idx >= 0
+        and status_connected_idx >= 0
+        and status_failure_idx < status_connected_idx
+        and header_failure_idx >= 0
+        and header_connected_idx >= 0
+        and header_failure_idx < header_connected_idx,
+        "fresh terminal failures must override generic Connected text, otherwise the GUI can show connected while the proxy data path is failing",
     )
     require(
         status_failure_idx >= 0
@@ -97,6 +108,16 @@ def main() -> None:
         and header_connecting_idx >= 0
         and header_failure_idx < header_connecting_idx,
         "fresh terminal failures must render before generic ConnectionStateConnectingToProxy text, otherwise the UI shows red 'waiting TCP'",
+    )
+    color_idx = diagnostics.find("public static int statusColorKey")
+    color_failure_idx = diagnostics.find("if (hasFreshFailure(proxyInfo))", color_idx)
+    color_connected_idx = diagnostics.find("currentConnectionState == ConnectionsManager.ConnectionStateConnected", color_idx)
+    require(
+        color_idx >= 0
+        and color_failure_idx >= 0
+        and color_connected_idx >= 0
+        and color_failure_idx < color_connected_idx,
+        "current proxy terminal failures must color the row as failure before generic connected blue",
     )
     has_failure_idx = diagnostics.find("public static boolean hasFreshFailure")
     has_failure_body = diagnostics[has_failure_idx:diagnostics.find("public static String statusText", has_failure_idx)]
@@ -117,10 +138,26 @@ def main() -> None:
         "fresh terminal failures must not be overwritten by early retry phases such as admission_queue or host_resolve_start",
     )
     require(
+        "isProxyUsableSuccessPhase" in diagnostics
+        and "SERVER_HELLO_HMAC_OK" in diagnostics
+        and "FIRST_TLS_APP_RECV" in diagnostics
+        and "FIRST_MTPROXY_PACKET_RECV" in diagnostics,
+        "ProxyCheckDiagnostics must define concrete success phases that prove a proxy is usable again",
+    )
+    require(
+        "ProxyCheckDiagnostics.isProxyUsableSuccessPhase(normalizedDiagnostic)" in text("connections_java")
+        and "ProxyCheckScheduler.markConnectionUsable(currentProxy, normalizedDiagnostic)" in text("connections_java"),
+        "concrete success phases from native must clear stale Java endpoint backoff and fresh terminal failures",
+    )
+    require(
         "proxyConnectionStageChanged" in text("notification_center")
         and "onProxyConnectionStageChanged" in text("connections_java")
         and "NotificationCenter.proxyConnectionStageChanged" in text("connections_java"),
         "Java must expose a NotificationCenter event for current proxy live stages",
+    )
+    require(
+        "NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxyConnectionStageChanged" in text("connections_java"),
+        "proxy live stages must also be posted globally because SharedConfig.currentProxy is global across accounts",
     )
     require(
         "onProxyConnectionStageChanged" in text("defines")
@@ -151,10 +188,12 @@ def main() -> None:
         "ConnectionSocket must publish a concrete terminal diagnostic on failed current-proxy disconnects",
     )
     require(
-        "addObserver(this, NotificationCenter.proxyConnectionStageChanged)" in text("proxy_list")
-        and "removeObserver(this, NotificationCenter.proxyConnectionStageChanged)" in text("proxy_list")
+        "NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.proxyConnectionStageChanged)" in text("proxy_list")
+        and "NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.proxyConnectionStageChanged)" in text("proxy_list")
+        and "NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.proxyConnectionStageChanged)" not in text("proxy_list")
+        and "NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.proxyConnectionStageChanged)" not in text("proxy_list")
         and "id == NotificationCenter.proxyConnectionStageChanged" in text("proxy_list"),
-        "Proxy list must refresh header and current row on live proxy stage updates",
+        "Proxy list must refresh header and current row on global live proxy stage updates from any account",
     )
     require(
         "proxy_connection_stage" in text("collector"),

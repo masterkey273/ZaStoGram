@@ -266,6 +266,12 @@
     <string name="ProxyStatusConnectingSlow">Подключаемся, это может занять время</string>
     <string name="ProxyStatusCheckingConnection">Проверяем подключение...</string>
     <string name="ProxyStatusAdmissionQueue">Ждём слот подключения к прокси...</string>
+    <string name="ProxyStatusEndpointCooldown">Ждём паузу перед повтором этого прокси...</string>
+    <string name="ProxyStatusTcpConnectGate">Ждём старт TCP-подключения к прокси...</string>
+    <string name="ProxyStatusDnsCoalesceWait">Ждём результат DNS прокси...</string>
+    <string name="ProxyStatusDnsCacheHit">Используем сохранённый IP прокси...</string>
+    <string name="ProxyStatusDnsCacheStore">IP прокси сохранён...</string>
+    <string name="ProxyStatusPhaseAdaptiveRecipe">Меняем рецепт запуска прокси...</string>
     <string name="ProxyStatusHostResolve">Ищем адрес прокси...</string>
     <string name="ProxyStatusConnectStart">Готовим подключение к прокси...</string>
     <string name="ProxyStatusTcpConnecting">Открываем TCP-соединение...</string>
@@ -290,6 +296,7 @@
     <string name="ProxyStatusServerHelloHmacMismatch">ServerHello не прошёл HMAC-проверку MTProxy</string>
     <string name="ProxyStatusMtproxyPacketSentNoResponse">MTProxy-пакет отправлен, ответа сервера нет</string>
     <string name="ProxyStatusPostHandshakeNoAppData">Рукопожатие прошло, MTProto-данные не пришли</string>
+    <string name="ProxyStatusDroppedEarlyAfterAppData">Подключился и быстро отвалился после первых данных</string>
     <string name="ProxyStatusDroppedAfterAppData">Подключился и отвалился после первых данных</string>
     <string name="ProxyStatusCancelled">Проверка отменена</string>
     <string name="ProxyStatusUnknownFail">Проверка не прошла: фаза неизвестна</string>

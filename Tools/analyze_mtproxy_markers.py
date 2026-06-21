@@ -33,6 +33,7 @@ DISCONNECT_RE = re.compile(
     r"mtproxy_disconnect reason=([-0-9]+).*?error=([-0-9]+).*?"
     r"proxy_state=([-0-9]+) tls_state=([-0-9]+) bytes_read=([0-9]+)"
 )
+TLS_FRAMES_COMPLETED_RE = re.compile(r"tls_frames_completed=([0-9]+)")
 PROXY_CHECK_RE = re.compile(r"proxy_check_([a-z_]+)")
 PROXY_CHECK_SCHEDULER_RE = re.compile(r"proxy_check_scheduler ([a-z_]+)")
 PROXY_CHECK_START_RE = re.compile(r"proxy_check_start .*ping_id=([0-9]+).*address=([^ ]+)")
@@ -51,6 +52,7 @@ SCHEDULER_LISTENERS_RE = re.compile(r"listeners=([0-9]+)")
 SCHEDULER_FORCE_RE = re.compile(r"force=(true|false)")
 SCHEDULER_RESULT_RE = re.compile(r"proxy_check_scheduler finish result=([a-z]+)")
 SCHEDULER_APPLIED_RE = re.compile(r"time=([-0-9]+) applied_time=([-0-9]+) raw_time=([-0-9]+)")
+SCHEDULER_PHASE_RE = re.compile(r"(?:phase|diagnostic)=([^ ]+)")
 TIME_RE = re.compile(r"^[0-9]{2}-[0-9]{2} ([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{3})")
 
 FAKETLS_FAILURE_VERDICTS = {
@@ -62,6 +64,7 @@ FAKETLS_FAILURE_VERDICTS = {
     "hmac_ok_but_on_connected_not_reached",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
+    "dropped_early_after_appdata",
     "peer_closed_after_client_hello",
 }
 
@@ -93,6 +96,7 @@ class Attempt:
     disconnect: str = ""
     disconnect_reason: str = ""
     disconnect_error: str = ""
+    tls_frames_completed: int = 0
     first_time: str = ""
     first_seconds: float = 0.0
     event_times: dict[str, float] = field(default_factory=dict)
@@ -203,6 +207,9 @@ class Attempt:
                 f"proxy_state={disconnect.group(3)} tls_state={disconnect.group(4)} "
                 f"bytes_read={disconnect.group(5)}"
             )
+        tls_frames_completed = TLS_FRAMES_COMPLETED_RE.search(text)
+        if tls_frames_completed:
+            self.tls_frames_completed = max(self.tls_frames_completed, int(tls_frames_completed.group(1)))
 
         event_map = {
             "connect_start": "connect_start",
@@ -212,6 +219,12 @@ class Attempt:
             "socket_connected": "socket_connected",
             "client_hello_send_progress": "client_hello_send_progress",
             "client_hello_sent": "client_hello_sent",
+            "endpoint_cooldown": "endpoint_cooldown",
+            "tcp_connect_gate": "tcp_connect_gate",
+            "dns_coalesce_wait": "dns_coalesce_wait",
+            "dns_cache_hit": "dns_cache_hit",
+            "dns_cache_store": "dns_cache_store",
+            "phase_adaptive_recipe": "phase_adaptive_recipe",
             "server_hello_hmac_ok": "server_hello_hmac_ok",
             "server_hello_hmac_timeout": "server_hello_hmac_timeout",
             "server_hello_timeout_close": "server_hello_timeout_close",
@@ -221,9 +234,13 @@ class Attempt:
             "admission_hold_after_client_hello_failure": "admission_hold_after_client_hello_failure",
             "on_connected": "on_connected",
             "first_tls_app_sent": "first_tls_app_sent",
+            "tls_frame_complete": "tls_frame_complete",
             "first_tls_app_recv": "first_tls_app_recv",
+            "dropped_early_after_appdata": "dropped_early_after_appdata",
+            "dropped_after_appdata": "dropped_after_appdata",
             "first_mtproxy_packet_sent": "first_mtproxy_packet_sent",
             "first_mtproxy_packet_recv": "first_mtproxy_packet_recv",
+            "mtproxy_packet_no_response_timeout": "mtproxy_packet_sent_no_response",
             "mtproxy_packet_sent_no_response": "mtproxy_packet_sent_no_response",
             "tls_alert": "tls_alert",
             "recv_eof": "recv_eof",
@@ -260,9 +277,16 @@ class Attempt:
             return "hmac_ok_but_on_connected_not_reached"
         if has("first_tls_app_sent") and not has("first_tls_app_recv"):
             return "post_handshake_no_appdata"
+        if has("dropped_early_after_appdata"):
+            return "dropped_early_after_appdata"
+        if has("dropped_after_appdata"):
+            return "dropped_after_appdata"
         if has("first_tls_app_recv"):
             return "ok"
         return "post_handshake_no_appdata"
+
+    def completed_tls_frames(self) -> int:
+        return max(self.tls_frames_completed, self.events["tls_frame_complete"])
 
     def compact(self) -> str:
         parts = [
@@ -412,6 +436,101 @@ def load_attempts(path: Path) -> tuple[list[Attempt], list[str]]:
             active_key_by_pointer.pop(pointer, None)
 
     return sorted(attempts.values(), key=lambda item: (item.first_line, item.key)), global_lines
+
+
+def proxy_check_endpoint_phase_counts(lines: list[str]) -> defaultdict[str, Counter[str]]:
+    endpoint_phases: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    proxy_checks: dict[str, dict[str, str | bool]] = {}
+
+    for text in lines:
+        if not PROXY_CHECK_RE.search(text):
+            continue
+
+        start = PROXY_CHECK_START_RE.search(text)
+        if start:
+            proxy_checks[start.group(1)] = {
+                "endpoint": start.group(2),
+                "socket_connected": False,
+                "close_reason": "",
+            }
+
+        socket = PROXY_CHECK_SOCKET_RE.search(text)
+        if socket:
+            proxy_checks.setdefault(socket.group(1), {"endpoint": "unknown", "socket_connected": False, "close_reason": ""})[
+                "socket_connected"
+            ] = True
+
+        close_with_ping = PROXY_CHECK_CLOSE_WITH_PING_RE.search(text)
+        if close_with_ping:
+            proxy_checks.setdefault(close_with_ping.group(2), {"endpoint": "unknown", "socket_connected": False, "close_reason": ""})[
+                "close_reason"
+            ] = close_with_ping.group(1)
+
+        finish = PROXY_CHECK_FINISH_RE.search(text)
+        if not finish:
+            continue
+
+        result_text = finish.group(1)
+        ping_id = finish.group(3)
+        endpoint_text = finish.group(4)
+        state = proxy_checks.setdefault(
+            ping_id,
+            {"endpoint": endpoint_text, "socket_connected": False, "close_reason": ""},
+        )
+        state["endpoint"] = endpoint_text
+        close_reason = state.get("close_reason") or "none"
+        if result_text == "ok":
+            phase = "ok"
+        elif (diagnostic := PROXY_CHECK_DIAGNOSTIC_RE.search(text)):
+            phase = diagnostic.group(1)
+        elif state.get("socket_connected"):
+            phase = "tcp_connected_no_pong"
+        else:
+            phase = "tcp_not_connected"
+
+        stats = endpoint_phases[endpoint_text]
+        stats["total"] += 1
+        stats[phase] += 1
+        if close_reason != "none":
+            stats[f"close_reason_{close_reason}"] += 1
+
+    return endpoint_phases
+
+
+def proxy_check_phase_counts(lines: list[str]) -> Counter[str]:
+    phases: Counter[str] = Counter()
+    for stats in proxy_check_endpoint_phase_counts(lines).values():
+        for phase, count in stats.items():
+            if phase != "total" and not phase.startswith("close_reason_"):
+                phases[phase] += count
+    return phases
+
+
+def scheduler_endpoint_stats(lines: list[str]) -> defaultdict[str, Counter[str]]:
+    by_endpoint: defaultdict[str, Counter[str]] = defaultdict(Counter)
+
+    for text in lines:
+        if "proxy_check_scheduler " not in text:
+            continue
+        endpoint = ENDPOINT_RE.search(text)
+        if not endpoint:
+            continue
+        endpoint_text = endpoint.group(1)
+        stats = by_endpoint[endpoint_text]
+        stats["total_events"] += 1
+
+        scheduler = PROXY_CHECK_SCHEDULER_RE.search(text)
+        event = scheduler.group(1) if scheduler else "unknown"
+        stats[event] += 1
+
+        result = SCHEDULER_RESULT_RE.search(text)
+        if result:
+            stats[f"finish_{result.group(1)}"] += 1
+
+        for phase in SCHEDULER_PHASE_RE.findall(text):
+            stats[f"phase_{phase}"] += 1
+
+    return by_endpoint
 
 
 def print_proxy_check_summary(lines: list[str]) -> None:
@@ -713,6 +832,52 @@ def print_plain_mtproxy_summary(attempts: list[Attempt]) -> None:
         print("  " + " ".join(parts))
 
 
+def print_layer_recommendations(attempts: list[Attempt], all_lines: list[str]) -> None:
+    proxy_check_phases = proxy_check_phase_counts(all_lines)
+    if not attempts and not proxy_check_phases:
+        return
+
+    verdicts = Counter(attempt.verdict() for attempt in attempts)
+    faketls = faketls_attempts(attempts)
+    faketls_verdicts = Counter(attempt.verdict() for attempt in faketls)
+    plain_attempts = [
+        attempt
+        for attempt in attempts
+        if attempt.secret_kind and attempt.secret_kind != "ee" and not attempt.events["client_hello_sent"]
+    ]
+    plain_no_response = sum(attempt.events["mtproxy_packet_sent_no_response"] for attempt in plain_attempts)
+    tls_frames_completed = sum(attempt.completed_tls_frames() for attempt in faketls)
+
+    print()
+    print("Layer recommendations:")
+    print(
+        "  "
+        f"dns_endpoint_stability host_resolve_failed={verdicts['host_resolve_failed']} "
+        f"tcp_not_connected={verdicts['tcp_not_connected']} "
+        f"proxy_check_tcp_not_connected={proxy_check_phases['tcp_not_connected']} "
+        f"proxy_check_tcp_connected_no_pong={proxy_check_phases['tcp_connected_no_pong']} "
+        "action=dns_cache_endpoint_circuit_breaker not_ja4_or_drs"
+    )
+    print(
+        "  "
+        f"faketls_handshake_recipe client_hello_sent_no_server_hello={faketls_verdicts['client_hello_sent_no_server_hello']} "
+        f"server_hello_hmac_mismatch={faketls_verdicts['server_hello_hmac_mismatch']} "
+        "action=profile_fragmentation_connection_pattern"
+    )
+    print(
+        "  "
+        f"plain_dd_endpoint_backoff mtproxy_packet_sent_no_response={plain_no_response} "
+        "action=endpoint_backoff_fallback dd_no_ja4"
+    )
+    print(
+        "  "
+        f"faketls_data_path post_handshake_no_appdata={faketls_verdicts['post_handshake_no_appdata']} "
+        f"dropped_early_after_appdata={faketls_verdicts['dropped_early_after_appdata']} "
+        f"tls_frames_completed={tls_frames_completed} "
+        "action=inspect_record_sizing_ipt_lifecycle"
+    )
+
+
 def print_faketls_profile_summary(attempts: list[Attempt]) -> None:
     profile_verdicts: Counter[str] = Counter()
     profile_hmac_ms: defaultdict[str, list[int]] = defaultdict(list)
@@ -818,6 +983,8 @@ def print_faketls_reliability_summary(attempts: list[Attempt]) -> None:
             f"{profile}: total={len(items)} ok={verdicts['ok']} ok_rate={ok_percent(verdicts['ok'], len(items))} "
             f"pre_server_hello={verdicts['client_hello_sent_no_server_hello']} "
             f"post_handshake={verdicts['post_handshake_no_appdata']} "
+            f"early_drop={verdicts['dropped_early_after_appdata']} "
+            f"tls_frames={sum(item.completed_tls_frames() for item in items)} "
             f"hmac_fail={verdicts['server_hello_hmac_mismatch']} "
             f"hmac_p50={percentile(hmac_values, 50) or '-'}ms"
         )
@@ -898,9 +1065,12 @@ def print_faketls_failure_timeline(attempts: list[Attempt]) -> None:
         print(f"  {attempt.compact()}")
 
 
-def write_csv_reports(attempts: list[Attempt], out_dir: Path) -> None:
+def write_csv_reports(attempts: list[Attempt], global_lines: list[str], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     all_attempts = attempts
+    all_lines = list(global_lines)
+    for attempt in all_attempts:
+        all_lines.extend(attempt.lines)
     attempts = faketls_attempts(attempts)
 
     attempts_path = out_dir / "mtproxy_attempts.csv"
@@ -925,6 +1095,7 @@ def write_csv_reports(attempts: list[Attempt], out_dir: Path) -> None:
                 "tcp_ms",
                 "hmac_ms",
                 "app_recv_ms",
+                "tls_frames_completed",
                 "disconnect_reason",
                 "disconnect_error",
                 "events",
@@ -951,6 +1122,7 @@ def write_csv_reports(attempts: list[Attempt], out_dir: Path) -> None:
                     "tcp_ms": attempt.timing_ms("socket_connect_start", "socket_connected"),
                     "hmac_ms": attempt.timing_ms("client_hello_sent", "server_hello_hmac_ok"),
                     "app_recv_ms": attempt.timing_ms("first_tls_app_sent", "first_tls_app_recv"),
+                    "tls_frames_completed": attempt.completed_tls_frames(),
                     "disconnect_reason": attempt.disconnect_reason,
                     "disconnect_error": attempt.disconnect_error,
                     "events": ",".join(sorted(attempt.events)),
@@ -970,6 +1142,11 @@ def write_csv_reports(attempts: list[Attempt], out_dir: Path) -> None:
             "total",
             "ok",
             "ok_percent",
+            "pre_server_hello",
+            "post_handshake",
+            "early_drop",
+            "tls_frames_completed",
+            "hmac_fail",
             "hmac_min_ms",
             "hmac_p50_ms",
             "hmac_max_ms",
@@ -996,6 +1173,11 @@ def write_csv_reports(attempts: list[Attempt], out_dir: Path) -> None:
                 "total": len(items),
                 "ok": verdicts["ok"],
                 "ok_percent": ok_percent(verdicts["ok"], len(items)),
+                "pre_server_hello": verdicts["client_hello_sent_no_server_hello"],
+                "post_handshake": verdicts["post_handshake_no_appdata"],
+                "early_drop": verdicts["dropped_early_after_appdata"],
+                "tls_frames_completed": sum(item.completed_tls_frames() for item in items),
+                "hmac_fail": verdicts["server_hello_hmac_mismatch"],
                 "hmac_min_ms": percentile(hmac_values, 0),
                 "hmac_p50_ms": percentile(hmac_values, 50),
                 "hmac_max_ms": percentile(hmac_values, 100),
@@ -1090,6 +1272,115 @@ def write_csv_reports(attempts: list[Attempt], out_dir: Path) -> None:
                 }
             )
 
+    proxy_check_stats = proxy_check_endpoint_phase_counts(all_lines)
+    proxy_check_path = out_dir / "mtproxy_proxy_check_stats.csv"
+    proxy_check_phase_columns = sorted(
+        {
+            phase
+            for stats in proxy_check_stats.values()
+            for phase in stats
+            if phase != "total" and not phase.startswith("close_reason_")
+        }
+        | {
+            "ok",
+            "tcp_not_connected",
+            "tcp_connected_no_pong",
+            "host_resolve_failed",
+            "network_block_suspected",
+            "mtproxy_packet_sent_no_response",
+            "unknown_fail",
+        }
+    )
+    proxy_check_close_columns = sorted(
+        {
+            phase
+            for stats in proxy_check_stats.values()
+            for phase in stats
+            if phase.startswith("close_reason_")
+        }
+    )
+    with proxy_check_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "endpoint",
+            "total",
+            "ok_percent",
+            *proxy_check_phase_columns,
+            *proxy_check_close_columns,
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for endpoint, stats in sorted(
+            proxy_check_stats.items(),
+            key=lambda item: (-item[1]["total"], item[0]),
+        ):
+            total = stats["total"]
+            row = {
+                "endpoint": endpoint,
+                "total": total,
+                "ok_percent": ok_percent(stats["ok"], total),
+            }
+            for column in proxy_check_phase_columns:
+                row[column] = stats[column]
+            for column in proxy_check_close_columns:
+                row[column] = stats[column]
+            writer.writerow(row)
+
+    scheduler_stats = scheduler_endpoint_stats(all_lines)
+    scheduler_path = out_dir / "mtproxy_scheduler_stats.csv"
+    scheduler_event_columns = sorted(
+        {
+            event
+            for stats in scheduler_stats.values()
+            for event in stats
+            if event != "total_events" and not event.startswith("phase_")
+        }
+        | {
+            "enqueue",
+            "enqueue_now",
+            "attach_pending",
+            "start",
+            "finish",
+            "finish_ok",
+            "finish_fail",
+            "backoff",
+            "skip_backoff",
+            "skip_fresh",
+            "finish_keep_connected",
+            "cancel_owner",
+            "live_failure_dedup",
+        }
+    )
+    scheduler_phase_columns = sorted(
+        {
+            event
+            for stats in scheduler_stats.values()
+            for event in stats
+            if event.startswith("phase_")
+        }
+    )
+    with scheduler_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "endpoint",
+            "total_events",
+            *scheduler_event_columns,
+            *scheduler_phase_columns,
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for endpoint, stats in sorted(
+            scheduler_stats.items(),
+            key=lambda item: (-item[1]["total_events"], item[0]),
+        ):
+            row = {
+                "endpoint": endpoint,
+                "total_events": stats["total_events"],
+            }
+            for column in scheduler_event_columns:
+                row[column] = stats[column]
+            for column in scheduler_phase_columns:
+                row[column] = stats[column]
+            writer.writerow(row)
+
 
 def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     print("MTProxy FakeTLS diagnostic summary")
@@ -1122,6 +1413,7 @@ def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     all_lines = list(global_lines)
     for attempt in attempts:
         all_lines.extend(attempt.lines)
+    print_layer_recommendations(attempts, all_lines)
     print_java_live_stage_summary(all_lines)
     print_proxy_check_summary(all_lines)
 
@@ -1149,11 +1441,17 @@ def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     print("How to read the verdicts:")
     print("- tcp_not_connected: TCP/connect/IP/proxy availability layer.")
     print("- host_resolve_failed: proxy hostname did not resolve; compare DNS/VPN and sslip.io fast-path before blaming JA4.")
+    print("- endpoint_cooldown: client delayed the next connect for this endpoint after a recent phase-specific failure.")
+    print("- tcp_connect_gate: client delayed a duplicate active TCP connect attempt for the same MTProxy endpoint.")
+    print("- dns_coalesce_wait: client delayed a duplicate cold DNS resolve for the same proxy host:port.")
+    print("- dns_cache_hit/dns_cache_store: client used or updated the last-good IP for a domain proxy.")
+    print("- phase_adaptive_recipe: client changed the next FakeTLS startup recipe after a phase-specific failure.")
     print("- connected_without_socket_connected_marker: Telegram reached on_connected, but this log slice has no socket_connected marker; do not treat it as a TCP failure.")
     print("- client_hello_sent_no_server_hello: compare VPN vs non-VPN; with VPN failure points to server/client compatibility, without VPN it can be DPI blackhole.")
     print("- server_hello_hmac_mismatch: likely ClientHello/profile/server response mismatch, not plain packet loss.")
     print("- mtproxy_packet_sent_no_response: plain dd TCP opened and the first MTProxy packet was sent, but no server reply arrived.")
     print("- post_handshake_no_appdata: HMAC passed; inspect TLS app-data write/read path and first MTProto packets.")
+    print("- dropped_early_after_appdata: first data arrived, then the session died quickly; inspect post-handshake lifecycle/backoff, not JA4.")
     print("- dropped_after_appdata: startup worked; look at later MTProto keepalive, server close, or external throttling.")
     print("- proxy_check fail:tcp_not_connected: TCP/connect/DNS/server availability layer; compare with VPN and external probe.")
     print("- proxy_check fail:tcp_connected_no_pong: TCP opened, but MTProxy ping did not complete; can be dead proxy, server overload, or path filtering.")
@@ -1165,7 +1463,7 @@ def main() -> int:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        help="Optional directory for CSV reports: mtproxy_attempts.csv and mtproxy_endpoint_profile_stats.csv",
+        help="Optional directory for CSV reports: mtproxy_attempts.csv, mtproxy_endpoint_profile_stats.csv, mtproxy_plain_account_stats.csv, mtproxy_proxy_check_stats.csv, mtproxy_scheduler_stats.csv",
     )
     args = parser.parse_args()
 
@@ -1175,7 +1473,7 @@ def main() -> int:
     attempts, global_lines = load_attempts(args.markers)
     print_report(attempts, global_lines)
     if args.out_dir:
-        write_csv_reports(attempts, args.out_dir)
+        write_csv_reports(attempts, global_lines, args.out_dir)
     return 0
 
 

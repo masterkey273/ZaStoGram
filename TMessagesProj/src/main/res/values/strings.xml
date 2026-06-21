@@ -187,6 +187,12 @@
     <string name="ProxyStatusConnectingSlow">Connecting, this can take a moment</string>
     <string name="ProxyStatusCheckingConnection">Checking connection...</string>
     <string name="ProxyStatusAdmissionQueue">Waiting for proxy connection slot...</string>
+    <string name="ProxyStatusEndpointCooldown">Waiting before retrying this proxy...</string>
+    <string name="ProxyStatusTcpConnectGate">Waiting to start proxy TCP connection...</string>
+    <string name="ProxyStatusDnsCoalesceWait">Waiting for proxy DNS result...</string>
+    <string name="ProxyStatusDnsCacheHit">Using saved proxy IP...</string>
+    <string name="ProxyStatusDnsCacheStore">Saved proxy IP...</string>
+    <string name="ProxyStatusPhaseAdaptiveRecipe">Adjusting proxy startup recipe...</string>
     <string name="ProxyStatusHostResolve">Resolving proxy host...</string>
     <string name="ProxyStatusConnectStart">Preparing proxy connection...</string>
     <string name="ProxyStatusTcpConnecting">Opening TCP connection...</string>
@@ -211,6 +217,7 @@
     <string name="ProxyStatusServerHelloHmacMismatch">ServerHello failed MTProxy HMAC check</string>
     <string name="ProxyStatusMtproxyPacketSentNoResponse">MTProxy packet sent, no server response</string>
     <string name="ProxyStatusPostHandshakeNoAppData">Handshake passed, no MTProto data arrived</string>
+    <string name="ProxyStatusDroppedEarlyAfterAppData">Connected, then dropped soon after first data</string>
     <string name="ProxyStatusDroppedAfterAppData">Connected, then dropped after first data</string>
     <string name="ProxyStatusCancelled">Check cancelled</string>
     <string name="ProxyStatusUnknownFail">Check failed: phase unknown</string>

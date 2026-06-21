@@ -59,7 +59,7 @@ public class WssMiniAppProxyBridge {
     private static SocksProxyConfig selectedSocksProxy() {
         SocksProxyConfig config = new SocksProxyConfig();
         SharedConfig.loadProxyList();
-        SharedConfig.ProxyInfo proxy = SharedConfig.currentProxy;
+        SharedConfig.ProxyInfo proxy = SharedConfig.currentWssSocksProxy;
         if (proxy == null || !TextUtils.isEmpty(proxy.secret) || TextUtils.isEmpty(proxy.address) || proxy.port <= 0 || proxy.port > 65535) {
             return config;
         }

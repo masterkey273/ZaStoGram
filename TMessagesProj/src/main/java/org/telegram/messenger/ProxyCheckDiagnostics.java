@@ -14,6 +14,12 @@ public class ProxyCheckDiagnostics {
     public static final String OK = "ok";
     public static final String CHECKING = "checking";
     public static final String ADMISSION_QUEUE = "admission_queue";
+    public static final String ENDPOINT_COOLDOWN = "endpoint_cooldown";
+    public static final String TCP_CONNECT_GATE = "tcp_connect_gate";
+    public static final String DNS_COALESCE_WAIT = "dns_coalesce_wait";
+    public static final String DNS_CACHE_HIT = "dns_cache_hit";
+    public static final String DNS_CACHE_STORE = "dns_cache_store";
+    public static final String PHASE_ADAPTIVE_RECIPE = "phase_adaptive_recipe";
     public static final String HOST_RESOLVE_START = "host_resolve_start";
     public static final String CONNECT_START = "connect_start";
     public static final String SOCKET_CONNECT_START = "socket_connect_start";
@@ -36,6 +42,7 @@ public class ProxyCheckDiagnostics {
     public static final String SERVER_HELLO_HMAC_MISMATCH = "server_hello_hmac_mismatch";
     public static final String MTPROXY_PACKET_SENT_NO_RESPONSE = "mtproxy_packet_sent_no_response";
     public static final String POST_HANDSHAKE_NO_APPDATA = "post_handshake_no_appdata";
+    public static final String DROPPED_EARLY_AFTER_APPDATA = "dropped_early_after_appdata";
     public static final String DROPPED_AFTER_APPDATA = "dropped_after_appdata";
     public static final String CANCELLED = "cancelled";
     public static final String UNKNOWN_FAIL = "unknown_fail";
@@ -48,6 +55,12 @@ public class ProxyCheckDiagnostics {
             case OK:
             case CHECKING:
             case ADMISSION_QUEUE:
+            case ENDPOINT_COOLDOWN:
+            case TCP_CONNECT_GATE:
+            case DNS_COALESCE_WAIT:
+            case DNS_CACHE_HIT:
+            case DNS_CACHE_STORE:
+            case PHASE_ADAPTIVE_RECIPE:
             case HOST_RESOLVE_START:
             case CONNECT_START:
             case SOCKET_CONNECT_START:
@@ -70,6 +83,7 @@ public class ProxyCheckDiagnostics {
             case SERVER_HELLO_HMAC_MISMATCH:
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
             case POST_HANDSHAKE_NO_APPDATA:
+            case DROPPED_EARLY_AFTER_APPDATA:
             case DROPPED_AFTER_APPDATA:
             case CANCELLED:
             case UNKNOWN_FAIL:
@@ -87,6 +101,12 @@ public class ProxyCheckDiagnostics {
     public static boolean isLivePhase(String diagnostic) {
         switch (normalize(diagnostic)) {
             case ADMISSION_QUEUE:
+            case ENDPOINT_COOLDOWN:
+            case TCP_CONNECT_GATE:
+            case DNS_COALESCE_WAIT:
+            case DNS_CACHE_HIT:
+            case DNS_CACHE_STORE:
+            case PHASE_ADAPTIVE_RECIPE:
             case HOST_RESOLVE_START:
             case CONNECT_START:
             case SOCKET_CONNECT_START:
@@ -124,11 +144,35 @@ public class ProxyCheckDiagnostics {
                 && isLivePhase(proxyInfo.lastCheckDiagnostic);
     }
 
+    public static boolean hasFreshEndpointCooldown(SharedConfig.ProxyInfo proxyInfo) {
+        return proxyInfo != null
+                && proxyInfo.lastCheckDiagnosticTime != 0
+                && android.os.SystemClock.elapsedRealtime() - proxyInfo.lastCheckDiagnosticTime < LIVE_PHASE_STALE_MS
+                && ENDPOINT_COOLDOWN.equals(normalize(proxyInfo.lastCheckDiagnostic));
+    }
+
     public static boolean hasFreshFailure(SharedConfig.ProxyInfo proxyInfo) {
         return proxyInfo != null
                 && proxyInfo.lastCheckDiagnosticTime != 0
                 && android.os.SystemClock.elapsedRealtime() - proxyInfo.lastCheckDiagnosticTime < FAILURE_PHASE_STALE_MS
                 && isFailure(proxyInfo.lastCheckDiagnostic);
+    }
+
+    public static boolean shouldAccelerateProxyRotation(String diagnostic) {
+        switch (normalize(diagnostic)) {
+            case HOST_RESOLVE_FAILED:
+            case TCP_NOT_CONNECTED:
+            case TCP_CONNECTED_NO_PONG:
+            case NETWORK_BLOCK_SUSPECTED:
+            case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
+            case SERVER_HELLO_HMAC_MISMATCH:
+            case MTPROXY_PACKET_SENT_NO_RESPONSE:
+            case POST_HANDSHAKE_NO_APPDATA:
+            case DROPPED_EARLY_AFTER_APPDATA:
+                return true;
+            default:
+                return false;
+        }
     }
 
     public static boolean shouldKeepFreshFailure(SharedConfig.ProxyInfo proxyInfo, String incomingDiagnostic) {
@@ -139,11 +183,25 @@ public class ProxyCheckDiagnostics {
                 && isEarlyRetryPhase(incomingDiagnostic);
     }
 
+    public static boolean isProxyUsableSuccessPhase(String diagnostic) {
+        switch (normalize(diagnostic)) {
+            case SERVER_HELLO_HMAC_OK:
+            case FIRST_TLS_APP_RECV:
+            case FIRST_MTPROXY_PACKET_RECV:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     public static String statusText(SharedConfig.ProxyInfo proxyInfo, boolean currentProxyEnabled, int currentConnectionState) {
         if (proxyInfo == null) {
             return LocaleController.getString(R.string.ProxyStatusUnknownFail);
         }
         if (currentProxyEnabled) {
+            if (hasFreshFailure(proxyInfo)) {
+                return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
+            }
             if (currentConnectionState == ConnectionsManager.ConnectionStateConnected || currentConnectionState == ConnectionsManager.ConnectionStateUpdating) {
                 if (proxyInfo.ping != 0) {
                     return LocaleController.getString(R.string.Connected) + ", " + LocaleController.formatString("Ping", R.string.Ping, proxyInfo.ping);
@@ -151,9 +209,6 @@ public class ProxyCheckDiagnostics {
                 return LocaleController.getString(R.string.Connected);
             }
             if (hasFreshLivePhase(proxyInfo)) {
-                return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
-            }
-            if (hasFreshFailure(proxyInfo)) {
                 return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
             }
             if (currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy) {
@@ -176,6 +231,9 @@ public class ProxyCheckDiagnostics {
         if (hasFreshFailure(proxyInfo)) {
             return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
         }
+        if (hasFreshEndpointCooldown(proxyInfo)) {
+            return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
+        }
         return LocaleController.getString(R.string.ProxyStatusUnchecked);
     }
 
@@ -186,6 +244,9 @@ public class ProxyCheckDiagnostics {
         if (proxyInfo == null) {
             return LocaleController.getString(R.string.ProxyWindowStatusNoProxy);
         }
+        if (hasFreshFailure(proxyInfo)) {
+            return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
+        }
         if (currentConnectionState == ConnectionsManager.ConnectionStateConnected || currentConnectionState == ConnectionsManager.ConnectionStateUpdating) {
             if (proxyInfo.ping != 0) {
                 return LocaleController.getString(R.string.ProxyWindowStatusReady) + ", " + LocaleController.formatString("Ping", R.string.Ping, proxyInfo.ping);
@@ -193,9 +254,6 @@ public class ProxyCheckDiagnostics {
             return LocaleController.getString(R.string.ProxyWindowStatusReady);
         }
         if (hasFreshLivePhase(proxyInfo)) {
-            return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
-        }
-        if (hasFreshFailure(proxyInfo)) {
             return shortDiagnosticText(proxyInfo.lastCheckDiagnostic);
         }
         if (currentConnectionState == ConnectionsManager.ConnectionStateConnectingToProxy) {
@@ -213,10 +271,13 @@ public class ProxyCheckDiagnostics {
 
     public static int statusColorKey(SharedConfig.ProxyInfo proxyInfo, boolean currentProxyEnabled, int currentConnectionState) {
         if (currentProxyEnabled) {
+            if (hasFreshFailure(proxyInfo)) {
+                return Theme.key_text_RedRegular;
+            }
             if (currentConnectionState == ConnectionsManager.ConnectionStateConnected || currentConnectionState == ConnectionsManager.ConnectionStateUpdating) {
                 return Theme.key_windowBackgroundWhiteBlueText6;
             }
-            return hasFreshFailure(proxyInfo) ? Theme.key_text_RedRegular : Theme.key_windowBackgroundWhiteGrayText2;
+            return Theme.key_windowBackgroundWhiteGrayText2;
         }
         if (proxyInfo == null) {
             return Theme.key_text_RedRegular;
@@ -238,6 +299,18 @@ public class ProxyCheckDiagnostics {
                 return LocaleController.getString(R.string.ProxyStatusCheckingConnection);
             case ADMISSION_QUEUE:
                 return LocaleController.getString(R.string.ProxyStatusAdmissionQueue);
+            case ENDPOINT_COOLDOWN:
+                return LocaleController.getString(R.string.ProxyStatusEndpointCooldown);
+            case TCP_CONNECT_GATE:
+                return LocaleController.getString(R.string.ProxyStatusTcpConnectGate);
+            case DNS_COALESCE_WAIT:
+                return LocaleController.getString(R.string.ProxyStatusDnsCoalesceWait);
+            case DNS_CACHE_HIT:
+                return LocaleController.getString(R.string.ProxyStatusDnsCacheHit);
+            case DNS_CACHE_STORE:
+                return LocaleController.getString(R.string.ProxyStatusDnsCacheStore);
+            case PHASE_ADAPTIVE_RECIPE:
+                return LocaleController.getString(R.string.ProxyStatusPhaseAdaptiveRecipe);
             case HOST_RESOLVE_START:
                 return LocaleController.getString(R.string.ProxyStatusHostResolve);
             case CONNECT_START:
@@ -282,6 +355,8 @@ public class ProxyCheckDiagnostics {
                 return LocaleController.getString(R.string.ProxyStatusMtproxyPacketSentNoResponse);
             case POST_HANDSHAKE_NO_APPDATA:
                 return LocaleController.getString(R.string.ProxyStatusPostHandshakeNoAppData);
+            case DROPPED_EARLY_AFTER_APPDATA:
+                return LocaleController.getString(R.string.ProxyStatusDroppedEarlyAfterAppData);
             case DROPPED_AFTER_APPDATA:
                 return LocaleController.getString(R.string.ProxyStatusDroppedAfterAppData);
             case CANCELLED:

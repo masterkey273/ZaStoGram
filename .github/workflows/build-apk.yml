@@ -101,6 +101,9 @@ jobs:
             echo "::warning::No KEYSTORE_BASE64 secret — signing with the PUBLIC dummy key. Add your own keystore for a real fork."
           fi
 
+      - name: Check MTProxy architecture guards
+        run: python3 Tools/check_mtproxy_all.py
+
       - name: Reset ccache stats
         run: ccache -z || true
 

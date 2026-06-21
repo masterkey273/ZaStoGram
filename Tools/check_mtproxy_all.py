@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+CHECKS = [
+    "check_mtproxy_faketls_path.py",
+    "check_mtproxy_tls_profile_ui.py",
+    "check_mtproxy_clienthello_fragmentation.py",
+    "check_mtproxy_connection_pattern_modes.py",
+    "check_mtproxy_startup_cover.py",
+    "check_mtproxy_data_layers.py",
+    "check_mtproxy_endpoint_resilience_layers.py",
+    "check_mtproxy_plain_dd_lifecycle.py",
+    "check_mtproxy_resilience_contract.py",
+    "check_mtproxy_rotation_and_soft_mux.py",
+    "check_proxy_connection_live_stages.py",
+    "check_proxy_check_diagnostics.py",
+    "check_proxy_ui_messages.py",
+    "check_proxy_check_scheduler.py",
+    "check_proxy_check_lifecycle.py",
+    "check_mtproxy_analyzer.py",
+]
+
+
+def validate_check_list() -> None:
+    expected = {
+        path.name
+        for path in (ROOT / "Tools").glob("check_mtproxy_*.py")
+        if path.name != "check_mtproxy_all.py"
+    }
+    configured = set(CHECKS)
+    missing = sorted(expected - configured)
+    stale = sorted(
+        check
+        for check in configured
+        if check.startswith("check_mtproxy_") and not (ROOT / "Tools" / check).exists()
+    )
+    if missing or stale:
+        if missing:
+            print("Missing MTProxy checks in check_mtproxy_all.py:", file=sys.stderr)
+            for check in missing:
+                print(f" - {check}", file=sys.stderr)
+        if stale:
+            print("Stale MTProxy checks in check_mtproxy_all.py:", file=sys.stderr)
+            for check in stale:
+                print(f" - {check}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def main() -> int:
+    validate_check_list()
+    failed = []
+    for check in CHECKS:
+        path = ROOT / "Tools" / check
+        print(f"==> {check}", flush=True)
+        result = subprocess.run([sys.executable, str(path)], cwd=ROOT)
+        if result.returncode != 0:
+            failed.append((check, result.returncode))
+    if failed:
+        print("\nMTProxy guard suite failed:", file=sys.stderr)
+        for check, code in failed:
+            print(f" - {check}: exit {code}", file=sys.stderr)
+        return 1
+    print("\nMTProxy guard suite passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
