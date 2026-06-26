@@ -1242,6 +1242,7 @@ public class ChatActivity extends BaseFragment implements
     public final static int OPTION_SUGGESTION_ADD_OFFER = 114;
 
     public final static int OPTION_VIEW_STATISTICS = 115;
+    public final static int OPTION_ZASTO_EDIT_HISTORY = 200;
 
     private final static int[] allowedNotificationsDuringChatListAnimations = new int[]{
             NotificationCenter.messagesRead,
@@ -3494,7 +3495,7 @@ public class ChatActivity extends BaseFragment implements
             }
             return chatActivity == null || !(
                 chatActivity.getDialogId() < 0 && chatActivity.getMessagesController().isPeerNoForwards(chatActivity.getDialogId()) ||
-                selectedView != null && selectedView.getMessageObject() != null && (selectedView.getMessageObject().messageOwner != null && selectedView.getMessageObject().messageOwner.noforwards)
+                !org.telegram.messenger.ZaStoPrivacy.ALLOW_SAVE_PROTECTED && selectedView != null && selectedView.getMessageObject() != null && (selectedView.getMessageObject().messageOwner != null && selectedView.getMessageObject().messageOwner.noforwards)
             );
         }
 
@@ -8587,8 +8588,9 @@ public class ChatActivity extends BaseFragment implements
         chatScrollHelper.setAnimationCallback(chatScrollHelperCallback);
 
         flagSecure = new FlagSecureReason(getParentActivity().getWindow(), () ->
+            !org.telegram.messenger.ZaStoPrivacy.ALLOW_SCREENSHOTS && (
             currentEncryptedChat != null ||
-            isPeerNoForwards()
+            isPeerNoForwards())
         );
 
         if (oldMessage != null) {
@@ -22073,14 +22075,25 @@ public class ChatActivity extends BaseFragment implements
             }
         } else if (id == NotificationCenter.zastoMessagesMarkedDeleted) {
             // ZaSto anti-delete: the remote side deleted these, but we keep them — just mark + redraw.
+            // Mirror processDeletedMessages' channel/loadIndex guard so a delete in another chat can't mis-mark this one.
             ArrayList<Integer> markedIds = (ArrayList<Integer>) args[0];
+            long zastoChannelId = (Long) args[1];
+            int zastoLoadIndex = 0;
+            if (ChatObject.isChannel(currentChat)) {
+                if (zastoChannelId == 0 && mergeDialogId != 0) {
+                    zastoLoadIndex = 1;
+                } else if (zastoChannelId == -dialog_id) {
+                    zastoLoadIndex = 0;
+                } else {
+                    return;
+                }
+            } else if (zastoChannelId != 0) {
+                return;
+            }
             boolean changed = false;
             for (int i = 0; i < markedIds.size(); i++) {
                 int mid = markedIds.get(i);
-                MessageObject obj = messagesDict[0].get(mid);
-                if (obj == null) {
-                    obj = messagesDict[1].get(mid);
-                }
+                MessageObject obj = messagesDict[zastoLoadIndex].get(mid);
                 if (obj != null) {
                     obj.deletedBySender = true;
                     changed = true;
@@ -30710,6 +30723,11 @@ public class ChatActivity extends BaseFragment implements
                 selectedObject = message;
                 selectedObjectGroup = groupedMessages;
                 fillMessageMenu(primaryMessage, icons, items, options);
+                if (org.telegram.messenger.ZaStoPrivacy.KEEP_EDIT_HISTORY && message != null && org.telegram.messenger.ZaStoEditHistoryStore.has(currentAccount, message.getDialogId(), message.getId())) {
+                    items.add("История изменений");
+                    options.add(OPTION_ZASTO_EDIT_HISTORY);
+                    icons.add(R.drawable.msg_edit);
+                }
             }
 
             if (selectedObject != null && selectedObject.isHiddenSensitive() && !selectedObject.isMediaSpoilersRevealed) {
@@ -32996,6 +33014,42 @@ public class ChatActivity extends BaseFragment implements
         MediaController.saveFile(path, getParentActivity(), messageObject.isVideo() ? 1 : 0, null, null);
     }
 
+    private void showZastoEditHistory(MessageObject msg) {
+        if (msg == null || getParentActivity() == null) {
+            return;
+        }
+        java.util.List<org.telegram.messenger.ZaStoEditHistoryStore.Version> all =
+            new java.util.ArrayList<>(org.telegram.messenger.ZaStoEditHistoryStore.get(currentAccount, msg.getDialogId(), msg.getId()));
+        all.add(new org.telegram.messenger.ZaStoEditHistoryStore.Version(
+            msg.messageOwner.edit_date != 0 ? msg.messageOwner.edit_date : msg.messageOwner.date,
+            msg.messageOwner.message == null ? "" : msg.messageOwner.message));
+        LinearLayout ll = new LinearLayout(getParentActivity());
+        ll.setOrientation(LinearLayout.VERTICAL);
+        ll.setPadding(AndroidUtilities.dp(22), AndroidUtilities.dp(8), AndroidUtilities.dp(22), 0);
+        for (int i = 0; i < all.size(); i++) {
+            org.telegram.messenger.ZaStoEditHistoryStore.Version v = all.get(i);
+            boolean last = i == all.size() - 1;
+            TextView date = new TextView(getParentActivity());
+            date.setTextColor(getThemedColor(Theme.key_dialogTextGray3));
+            date.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+            String label = LocaleController.formatSmallDateChat(v.date) + ", " + LocaleController.getInstance().getFormatterDay().format((long) v.date * 1000);
+            date.setText(last ? (label + " · текущая") : label);
+            ll.addView(date, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, i == 0 ? 0 : 12, 0, 2));
+            TextView body = new TextView(getParentActivity());
+            body.setTextColor(getThemedColor(Theme.key_dialogTextBlack));
+            body.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
+            body.setText(TextUtils.isEmpty(v.text) ? "(без текста)" : v.text);
+            ll.addView(body, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+        }
+        android.widget.ScrollView sv = new android.widget.ScrollView(getParentActivity());
+        sv.addView(ll);
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
+        builder.setTitle("История изменений");
+        builder.setView(sv);
+        builder.setNegativeButton(LocaleController.getString(R.string.Close), null);
+        showDialog(builder.create());
+    }
+
     private void processSelectedOption(int option) {
         if (selectedObject == null || getParentActivity() == null) {
             return;
@@ -33061,6 +33115,10 @@ public class ChatActivity extends BaseFragment implements
                 DialogsActivity fragment = new DialogsActivity(args);
                 fragment.setDelegate(this);
                 presentFragment(fragment);
+                break;
+            }
+            case OPTION_ZASTO_EDIT_HISTORY: {
+                showZastoEditHistory(selectedObject);
                 break;
             }
             case OPTION_COPY: {
@@ -33321,6 +33379,22 @@ public class ChatActivity extends BaseFragment implements
                     selectedObjectGroup = null;
                     selectedObjectToEditCaption = null;
                     return;
+                }
+                if (org.telegram.messenger.ZaStoPrivacy.ALLOW_SAVE_PROTECTED && selectedObject != null && (selectedObject.isVoiceOnce() || selectedObject.isRoundOnce())) {
+                    // ZaSto: view-once voice/round video are encrypted at rest — decrypt to a temp file, then save.
+                    final MessageObject mo = selectedObject;
+                    final String docName = FileLoader.getDocumentFileName(mo.getDocument());
+                    final String mime = mo.getDocument() != null ? mo.getDocument().mime_type : "";
+                    Utilities.globalQueue.postRunnable(() -> {
+                        java.io.File dec = MediaController.getPlaintextFileForSave(currentAccount, mo);
+                        if (dec != null) {
+                            AndroidUtilities.runOnUIThread(() -> MediaController.saveFile(dec.getAbsolutePath(), getParentActivity(), 2, TextUtils.isEmpty(docName) ? mo.getFileName() : docName, mime, null));
+                        }
+                    });
+                    selectedObject = null;
+                    selectedObjectGroup = null;
+                    selectedObjectToEditCaption = null;
+                    break;
                 }
                 boolean isMusic = selectedObject.isMusic();
                 boolean isDocument = selectedObject.isDocument();
@@ -45519,6 +45593,11 @@ public class ChatActivity extends BaseFragment implements
                             items.add(LocaleController.getString(R.string.ShareFile));
                             options.add(OPTION_SHARE);
                             icons.add(R.drawable.msg_shareout);
+                        } else if (org.telegram.messenger.ZaStoPrivacy.ALLOW_SAVE_PROTECTED && (selectedObject.isVoiceOnce() || selectedObject.isRoundOnce())) {
+                            // ZaSto: allow saving view-once voice / round video (decrypted on save).
+                            items.add(LocaleController.getString(R.string.SaveToDownloads));
+                            options.add(OPTION_SAVE_TO_DOWNLOADS_OR_MUSIC);
+                            icons.add(R.drawable.msg_download);
                         } else {
                             if (!selectedObject.needDrawBluredPreview()) {
                                 items.add(LocaleController.getString(R.string.SaveToGallery));

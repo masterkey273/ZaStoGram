@@ -967,6 +967,28 @@ public class SecretMediaViewer implements NotificationCenter.NotificationCenterD
         playButton.setPivotY(dp(32));
         containerView.addView(playButton, LayoutHelper.createFrame(64, 64, Gravity.CENTER));
 
+        // ZaSto: allow saving secret-chat media (decrypts the at-rest .enc copy to gallery).
+        ImageView zastoSaveButton = new ImageView(activity);
+        zastoSaveButton.setImageResource(R.drawable.msg_download);
+        zastoSaveButton.setScaleType(ImageView.ScaleType.CENTER);
+        zastoSaveButton.setColorFilter(0xffffffff);
+        zastoSaveButton.setVisibility(org.telegram.messenger.ZaStoPrivacy.ALLOW_SAVE_PROTECTED ? View.VISIBLE : View.GONE);
+        zastoSaveButton.setOnClickListener(v -> {
+            final MessageObject mo = currentMessageObject;
+            if (mo == null || !org.telegram.messenger.ZaStoPrivacy.ALLOW_SAVE_PROTECTED) {
+                return;
+            }
+            final boolean isVideo = mo.isVideo() || mo.isRoundVideo();
+            final android.content.Context ctx = containerView.getContext();
+            org.telegram.messenger.Utilities.globalQueue.postRunnable(() -> {
+                java.io.File f = org.telegram.messenger.MediaController.getPlaintextFileForSave(currentAccount, mo);
+                if (f != null) {
+                    AndroidUtilities.runOnUIThread(() -> org.telegram.messenger.MediaController.saveFile(f.getAbsolutePath(), ctx, isVideo ? 1 : 0, null, null));
+                }
+            });
+        });
+        containerView.addView(zastoSaveButton, LayoutHelper.createFrame(48, 48, Gravity.TOP | Gravity.RIGHT, 0, 8, 64, 0));
+
         windowLayoutParams = new WindowManager.LayoutParams();
         windowLayoutParams.height = WindowManager.LayoutParams.MATCH_PARENT;
         windowLayoutParams.format = PixelFormat.TRANSLUCENT;

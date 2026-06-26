@@ -969,6 +969,9 @@ public class TranslateAlert2 extends BottomSheet implements NotificationCenter.N
     }
 
     public void setNoforwards(boolean noforwards) {
+        if (org.telegram.messenger.ZaStoPrivacy.ALLOW_SCREENSHOTS) {
+            noforwards = false;
+        }
         if (textView != null) {
             textView.setTextIsSelectable(!noforwards);
         }

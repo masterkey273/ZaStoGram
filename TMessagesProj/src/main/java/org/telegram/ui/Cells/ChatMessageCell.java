@@ -11997,6 +11997,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             Window window = activity == null ? null : activity.getWindow();
             if (window != null) {
                 flagSecure = new FlagSecureReason(window, () ->
+                    !org.telegram.messenger.ZaStoPrivacy.ALLOW_SCREENSHOTS &&
                     currentMessageObject != null && currentMessageObject.messageOwner != null && (
                         currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA && (groupMedia == null || !groupMedia.hidden) ||
                         currentMessageObject.messageOwner.noforwards ||
@@ -18382,10 +18383,15 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         if (currentMessageObject.messageOwner.video_processing_pending) {
             timeString = formatString(R.string.ScheduledTimeApprox, timeString);
         }
+        // ZaSto: pick a distinct, legible coloured tag; applied as a span after currentTimeString is assembled.
+        CharSequence zastoMarker = null;
+        int zastoMarkerColor = 0;
         if (org.telegram.messenger.ZaStoPrivacy.KEEP_DELETED && currentMessageObject.deletedBySender) {
-            timeString = "🗑 " + timeString;
+            zastoMarker = "удалено ";
+            zastoMarkerColor = getThemedColor(Theme.key_text_RedRegular);
         } else if (org.telegram.messenger.ZaStoPrivacy.KEEP_EPHEMERAL && currentMessageObject.isZastoKeptEphemeral()) {
-            timeString = "🔥 " + timeString;
+            zastoMarker = "разово ";
+            zastoMarkerColor = getThemedColor(Theme.key_color_orange);
         }
         if (signString != null) {
             if (messageObject.messageOwner.via_business_bot_id != 0) {
@@ -18426,6 +18432,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             } else {
                 currentTimeString = TextUtils.concat(formatString(R.string.MessageScheduledRepeatSeconds, period), ", ", currentTimeString);
             }
+        }
+        if (zastoMarker != null && !TextUtils.isEmpty(currentTimeString)) {
+            android.text.SpannableString zastoSpan = new android.text.SpannableString(zastoMarker);
+            zastoSpan.setSpan(new android.text.style.ForegroundColorSpan(zastoMarkerColor), 0, zastoMarker.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            currentTimeString = TextUtils.concat(zastoSpan, currentTimeString);
         }
         timeTextWidth = timeWidth = (int) Math.ceil(Theme.chat_timePaint.measureText(currentTimeString, 0, currentTimeString == null ? 0 : currentTimeString.length()));
         if (currentMessageObject.scheduled && currentMessageObject.messageOwner.date == 0x7FFFFFFE || currentMessageObject.notime) {

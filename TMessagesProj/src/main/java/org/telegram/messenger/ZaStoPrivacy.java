@@ -25,6 +25,9 @@ public final class ZaStoPrivacy {
     /** Do not send the "took a screenshot" service message to the other party. */
     public static final boolean MUTE_SCREENSHOT_PING = true;
 
+    /** Keep previous versions of remotely-edited messages so the edit history can be viewed. */
+    public static final boolean KEEP_EDIT_HISTORY = true;
+
     private ZaStoPrivacy() {
     }
 }

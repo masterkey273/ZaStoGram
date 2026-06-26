@@ -95,6 +95,21 @@ def main() -> int:
     require("public static long usableSuccessRemainingMs" in store, "runtime store must expose remaining usable-success hold", failures)
     require("static long usableSuccessRemainingMs" in health, "health store must expose usable-success remaining time", failures)
 
+    native_stage = method_body(store, "public static Decision onNativeStage")
+    live_hold_idx = native_stage.find("decision=held_live_by_usable_success")
+    visible_write_idx = native_stage.find("if (selectedAccountStage && ProxyPhasePolicy.canOverwriteVisible(event.phase))")
+    require(
+        live_hold_idx >= 0
+        and visible_write_idx >= 0
+        and live_hold_idx < visible_write_idx
+        and "ProxyHealthStore.hasFreshUsableSuccess(currentProxy, event.timestamp)" in native_stage
+        and "ProxyPhasePolicy.isLivePhase(event.phase)" in native_stage
+        and "!ProxyPhasePolicy.isProxyUsableSuccessPhase(event.phase)" in native_stage
+        and 'return new Decision("held_live_by_usable_success"' in native_stage,
+        "fresh usable success must hold later live pre-TCP native stages before they can overwrite visible state",
+        failures,
+    )
+
     rotation_stage = rotation[rotation.find("NotificationCenter.proxyConnectionStageChanged"):]
     require(
         "ProxyRuntimeStateStore.hasFreshUsableSuccess(SharedConfig.currentProxy)" in rotation_stage
@@ -136,6 +151,7 @@ def main() -> int:
 
     require("endpoint_failure_shadowed_by_success" in analyzer, "analyzer must know the native shadow marker", failures)
     require("held_by_usable_success" in analyzer, "analyzer must preserve Java usable-success hold decisions", failures)
+    require("held_live_by_usable_success" in analyzer, "analyzer must explain Java live-stage holds after usable success", failures)
     require('"check_proxy_usable_success_hold.py"' in all_checks, "full guard suite must include usable-success hold guard", failures)
 
     run_analyzer_shadow_check(failures)

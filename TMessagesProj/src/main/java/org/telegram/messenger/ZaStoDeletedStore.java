@@ -46,7 +46,7 @@ public final class ZaStoDeletedStore {
         }
     }
 
-    public static Set<Integer> get(int account, long dialogId) {
+    public static synchronized Set<Integer> get(int account, long dialogId) {
         Set<String> raw = prefs(account).getStringSet(key(dialogId), null);
         Set<Integer> out = new HashSet<>();
         if (raw != null) {

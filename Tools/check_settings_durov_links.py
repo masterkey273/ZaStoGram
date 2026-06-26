@@ -15,13 +15,11 @@ EXPECTED_STRINGS = {
     "DurovLalka": "Дуров лалка",
     "OurChannel": "Наш канал",
     "OurVpn": "Наш VPN",
-    "DonateAndSupport": "Донаты &amp; поддержать",
 }
 
 EXPECTED_LINKS = {
     24: ("OurChannel", "settings_channel", "https://t.me/bypassblock"),
     25: ("OurVpn", "settings_privacy", "https://t.me/vpndiscordyooutube"),
-    26: ("DonateAndSupport", "settings_gift", "https://t.me/zapretvpns_bot"),
 }
 
 
@@ -64,6 +62,11 @@ def main() -> int:
             is not None,
             f"Settings item {item_id} must open {url}",
         )
+
+    require(
+        "https://t.me/zapretvpns_bot" not in java,
+        "Zapret VPNs sponsor link must live in the chat list, not Settings",
+    )
 
     if errors:
         print("Settings Durov links check failed:")

@@ -11866,13 +11866,15 @@ public class MessagesController extends BaseController implements NotificationCe
             putChats(messagesRes.chats, isCache);
 
             if (ZaStoPrivacy.KEEP_DELETED && objects != null && !objects.isEmpty()) {
-                // ZaSto anti-delete: restore the "deleted by sender" mark for kept messages on load.
-                java.util.Set<Integer> zastoDeletedGlobal = ZaStoDeletedStore.get(currentAccount, 0);
-                java.util.Set<Integer> zastoDeletedDialog = ZaStoDeletedStore.get(currentAccount, dialogId);
-                if (!zastoDeletedGlobal.isEmpty() || !zastoDeletedDialog.isEmpty()) {
+                // ZaSto anti-delete: restore the "deleted by sender" mark on load. Pick the right id-space —
+                // channels use a per-channel mid space (key = dialogId = -channelId), everything else uses key 0 —
+                // so we never false-positive a channel message against the global set.
+                boolean zastoIsChannel = ChatObject.isChannel(getChat(-dialogId));
+                java.util.Set<Integer> zastoDeleted = ZaStoDeletedStore.get(currentAccount, zastoIsChannel ? dialogId : 0);
+                if (!zastoDeleted.isEmpty()) {
                     for (int zi = 0, zn = objects.size(); zi < zn; zi++) {
                         MessageObject zobj = objects.get(zi);
-                        if (zobj != null && (zastoDeletedGlobal.contains(zobj.getId()) || zastoDeletedDialog.contains(zobj.getId()))) {
+                        if (zobj != null && zastoDeleted.contains(zobj.getId())) {
                             zobj.deletedBySender = true;
                         }
                     }
@@ -14097,8 +14099,9 @@ public class MessagesController extends BaseController implements NotificationCe
         long dialogId = messageObject.getDialogId();
         getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
         getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
-        if (ZaStoPrivacy.KEEP_EPHEMERAL && (messageObject.needDrawBluredPreview() || messageObject.isVoiceOnce() || messageObject.isRoundOnce())) {
+        if (ZaStoPrivacy.KEEP_EPHEMERAL && messageObject.isZastoKeptEphemeral()) {
             // Keep ephemeral content locally read but never signal the server (no destruction / no view receipt).
+            // Use isZastoKeptEphemeral (ttl_seconds-based) — needDrawBluredPreview is now forced false for cloud ttl media.
             return;
         }
         if (messageObject.getId() < 0) {
@@ -14166,6 +14169,10 @@ public class MessagesController extends BaseController implements NotificationCe
 
     public void doDeleteShowOnceTask(long taskId, long dialogId, int mid) {
         getMessagesStorage().removePendingTask(taskId);
+        if (ZaStoPrivacy.KEEP_EPHEMERAL) {
+            // Defuse legacy show-once tasks carried over from a previous build: drop the task, keep the media.
+            return;
+        }
         ArrayList<Integer> mids = new ArrayList<>();
         mids.add(mid);
         getMessagesStorage().emptyMessagesMedia(dialogId, mids);
@@ -17052,6 +17059,12 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     protected void deleteMessagesByPush(long dialogId, ArrayList<Integer> ids, long channelId) {
+        if (ZaStoPrivacy.KEEP_DELETED) {
+            // ZaSto anti-delete: keep messages deleted via push (background) too — persist the mark, do not purge.
+            ZaStoDeletedStore.mark(currentAccount, channelId == 0 ? 0 : -channelId, ids);
+            AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.zastoMessagesMarkedDeleted, ids, channelId));
+            return;
+        }
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             AndroidUtilities.runOnUIThread(() -> {
                 getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, ids, channelId, false);

@@ -29,6 +29,13 @@ public final class ProxyRuntimeStateStore {
             logControl("decision=visible_usable_success source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey);
             return new Decision("visible_usable_success", event.phase, event.endpointKey, false, true, false);
         }
+        if (ProxyHealthStore.hasFreshUsableSuccess(currentProxy, event.timestamp)
+                && ProxyPhasePolicy.isLivePhase(event.phase)
+                && !ProxyPhasePolicy.isProxyUsableSuccessPhase(event.phase)) {
+            String heldBy = ProxyStatusMirror.diagnostic(currentProxy);
+            logControl("decision=held_live_by_usable_success source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);
+            return new Decision("held_live_by_usable_success", event.phase, event.endpointKey, false, false, true);
+        }
         if (ProxyPhasePolicy.canBackoff(event.phase) && ProxyHealthStore.hasFreshUsableSuccess(currentProxy, event.timestamp)) {
             String heldBy = ProxyStatusMirror.diagnostic(currentProxy);
             logControl("decision=held_by_usable_success source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);

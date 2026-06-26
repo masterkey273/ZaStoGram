@@ -7728,8 +7728,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         int filterId = 0;
         if (adapter instanceof DialogsAdapter) {
             DialogsAdapter dialogsAdapter = (DialogsAdapter) adapter;
-            if (dialogsAdapter.isZapretVpnSponsor(position)) {
-                Browser.openUrl(getContext(), "https://t.me/zapretvpns_bot");
+            if (dialogsAdapter.isZapretVpnSponsorDialog(position)) {
+                getMessagesController().openByUserName(DialogsAdapter.ZAPRET_VPN_SPONSOR_USERNAME, this, 1);
                 return;
             }
             int dialogsType = dialogsAdapter.getDialogsType();
@@ -8120,7 +8120,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         if (adapter.getItemViewType(position) == DialogsAdapter.VIEW_TYPE_FORWARD_TO_STORIES_CELL) {
             return false;
         }
-        if (adapter.getItemViewType(position) == DialogsAdapter.VIEW_TYPE_ZAPRET_VPN_SPONSOR) {
+        if (adapter instanceof DialogsAdapter && ((DialogsAdapter) adapter).isZapretVpnSponsorDialog(position)) {
             return false;
         }
 

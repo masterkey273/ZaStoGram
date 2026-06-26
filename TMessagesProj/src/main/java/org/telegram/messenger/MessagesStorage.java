@@ -13539,7 +13539,8 @@ public class MessagesStorage extends BaseController {
                     }
                     arrayList.add(cursor.intValue(0));
                 }
-                if (arrayList != null) {
+                if (arrayList != null && !ZaStoPrivacy.KEEP_EPHEMERAL) {
+                    // ZaSto: keep self-destruct / ttl media even when a read-contents update arrives (e.g. a multi-device read).
                     emptyMessagesMedia(dialogId, arrayList);
                 }
                 cursor.dispose();
@@ -15460,6 +15461,10 @@ public class MessagesStorage extends BaseController {
                                     TLRPC.Message oldMessage = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
                                     oldMessage.readAttachPath(data, getUserConfig().clientUserId);
                                     data.reuse();
+                                    if (ZaStoPrivacy.KEEP_EDIT_HISTORY && !message.out) {
+                                        // ZaSto: keep the previous version of an incoming edited message.
+                                        ZaStoEditHistoryStore.recordEdit(currentAccount, MessageObject.getDialogId(message), oldMessage, message);
+                                    }
                                     if (reactionUpdates != null) {
                                         reactionUpdates.add(new SavedReactionsUpdate(selfId, oldMessage, message));
                                     }

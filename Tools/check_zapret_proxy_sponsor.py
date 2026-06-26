@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static guard for the Zapret VPN sponsor row and free proxy links."""
+"""Static guard for the Zapret VPN real sponsor dialog and free proxy links."""
 
 from pathlib import Path
 import re
@@ -16,8 +16,6 @@ STRINGS = ROOT / "TMessagesProj/src/main/res/values/strings.xml"
 
 
 EXPECTED_STRINGS = {
-    "ZapretVpnSponsorTitle": "Zapret VPNs",
-    "ZapretVpnSponsorSubtitle": "Спонсор прокси",
     "ZapretVpnSponsorSetting": "Показывать спонсора прокси",
     "FreeProxyChannels": "Бесплатные прокси",
     "FreeProxyMtProxyEveryday": "MTProxy everyday",
@@ -75,12 +73,16 @@ def main() -> int:
     )
 
     require(
-        "VIEW_TYPE_ZAPRET_VPN_SPONSOR" in dialogs_adapter,
-        "DialogsAdapter must define a dedicated sponsor view type",
+        "VIEW_TYPE_ZAPRET_VPN_SPONSOR" not in dialogs_adapter,
+        "Sponsor must not use a synthetic view type",
     )
     require(
         "shouldShowZapretVpnSponsor()" in dialogs_adapter,
         "DialogsAdapter must gate the sponsor row to the default chat list",
+    )
+    require(
+        'ZAPRET_VPN_SPONSOR_USERNAME = "zapretvpns_bot"' in dialogs_adapter,
+        "DialogsAdapter must use the real Zapret VPNs username",
     )
     require(
         "filterLegacyProxySponsorDialogs(" in dialogs_adapter
@@ -88,24 +90,40 @@ def main() -> int:
         "DialogsAdapter must remove the legacy Telegram proxy promo dialog",
     )
     require(
-        "insertZapretVpnSponsorItem()" in dialogs_adapter
-        and "isArchiveDialog(item.dialog)" in dialogs_adapter
-        and "insertIndex = i + 1" in dialogs_adapter,
-        "DialogsAdapter must insert the sponsor below the archive row when archive exists",
+        "promoteZapretVpnSponsorDialog(" in dialogs_adapter
+        and ("isArchiveDialog(dialog)" in dialogs_adapter or "isArchiveDialog(item.dialog)" in dialogs_adapter)
+        and "result.add(sponsorDialog)" in dialogs_adapter,
+        "DialogsAdapter must promote the real sponsor dialog below the archive row when archive exists",
     )
     require(
         "SharedConfig.showZapretVpnSponsor" in dialogs_adapter,
         "DialogsAdapter must honor the hide setting",
     )
+    is_sponsor_method = dialogs_adapter[
+        dialogs_adapter.find("public boolean isZapretVpnSponsorDialog"):
+        dialogs_adapter.find("private ArrayList<TLRPC.Dialog> filterLegacyProxySponsorDialogs")
+    ]
     require(
-        "getString(R.string.ZapretVpnSponsorTitle)" in dialogs_adapter
-        and "getString(R.string.ZapretVpnSponsorSubtitle)" in dialogs_adapter,
-        "Sponsor row must use the Zapret VPN title and proxy sponsor subtitle",
+        "!shouldShowZapretVpnSponsor()" in is_sponsor_method,
+        "Sponsor row detection must turn off when the setting is hidden",
     )
     require(
-        "isZapretVpnSponsor(position)" in dialogs_activity
-        and 'Browser.openUrl(getContext(), "https://t.me/zapretvpns_bot")' in dialogs_activity,
-        "DialogsActivity must open the sponsor bot from the synthetic chat row",
+        "DialogCell.CustomDialog" not in extract_zapret_adapter_region(dialogs_adapter)
+        and "customDialog.name" not in extract_zapret_adapter_region(dialogs_adapter)
+        and "customDialog.message" not in extract_zapret_adapter_region(dialogs_adapter),
+        "Sponsor row must not be rendered as a fake CustomDialog",
+    )
+    require(
+        "getUserNameResolver().resolve(ZAPRET_VPN_SPONSOR_USERNAME" in dialogs_adapter
+        and "new TLRPC.TL_dialog()" in dialogs_adapter
+        and "messagesController.dialogs_dict.get(dialogId)" in dialogs_adapter,
+        "DialogsAdapter must resolve the username and build a real dialog placeholder only from a real peer",
+    )
+    require(
+        "isZapretVpnSponsorDialog(position)" in dialogs_activity
+        and "openByUserName(DialogsAdapter.ZAPRET_VPN_SPONSOR_USERNAME" in dialogs_activity
+        and 'Browser.openUrl(getContext(), "https://t.me/zapretvpns_bot")' not in dialogs_activity,
+        "DialogsActivity must open the sponsor through Telegram username resolution, not Browser.openUrl",
     )
     custom_dialog_start = dialog_cell.find("public void setDialog(CustomDialog dialog)")
     custom_dialog_end = dialog_cell.find("private void checkOnline()", custom_dialog_start)
@@ -170,6 +188,16 @@ def main() -> int:
 
     print("Zapret proxy sponsor check passed")
     return 0
+
+
+def extract_zapret_adapter_region(dialogs_adapter: str) -> str:
+    start = dialogs_adapter.find("ZAPRET")
+    if start < 0:
+        return ""
+    end = dialogs_adapter.find("case VIEW_TYPE_FORWARD_TO_STORIES_CELL", start)
+    if end < 0:
+        end = dialogs_adapter.find("case VIEW_TYPE_EMPTY", start)
+    return dialogs_adapter[start:end]
 
 
 if __name__ == "__main__":

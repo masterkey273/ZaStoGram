@@ -5477,6 +5477,42 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         new MediaLoader(context, accountInstance, messageObjects, onSaved).start();
     }
 
+    // ZaSto: returns a plaintext File usable by saveFile(), decrypting an at-rest ".enc" copy
+    // (secret-chat media, voice-once / round-once) into cache when there is no plaintext on disk.
+    // Blocking I/O — must be called off the UI thread.
+    public static File getPlaintextFileForSave(int account, MessageObject messageObject) {
+        if (messageObject == null || messageObject.messageOwner == null) {
+            return null;
+        }
+        String ap = messageObject.messageOwner.attachPath;
+        if (!TextUtils.isEmpty(ap)) {
+            File f = new File(ap);
+            if (f.exists()) {
+                return f;
+            }
+        }
+        File base = FileLoader.getInstance(account).getPathToMessage(messageObject.messageOwner);
+        if (base == null) {
+            return null;
+        }
+        if (base.exists()) {
+            return base;
+        }
+        File enc = new File(base.getAbsolutePath() + ".enc");
+        File key = new File(FileLoader.getInternalCacheDir(), base.getName() + ".enc.key");
+        if (!enc.exists() || !key.exists()) {
+            return null;
+        }
+        File out = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "zsave_" + base.getName());
+        try (org.telegram.messenger.secretmedia.EncryptedFileInputStream in = new org.telegram.messenger.secretmedia.EncryptedFileInputStream(enc, key)) {
+            AndroidUtilities.copyFile(in, out);
+        } catch (Throwable t) {
+            FileLog.e(t);
+            return null;
+        }
+        return out;
+    }
+
     public static void saveFile(String fullPath, Context context, final int type, final String name, final String mime) {
         saveFile(fullPath, context, type, name, mime, null);
     }

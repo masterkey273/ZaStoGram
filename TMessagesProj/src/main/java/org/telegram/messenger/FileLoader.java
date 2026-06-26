@@ -1109,7 +1109,7 @@ public class FileLoader extends BaseController {
             }
             if (parentObject instanceof MessageObject) {
                 messageObject = (MessageObject) parentObject;
-                if (messageObject.isRoundVideo() || messageObject.isVoice() || messageObject.isAnyKindOfSticker() || messageObject.messageOwner.noforwards) {
+                if (messageObject.isRoundVideo() || messageObject.isVoice() || messageObject.isAnyKindOfSticker() || (!ZaStoPrivacy.ALLOW_SAVE_PROTECTED && messageObject.messageOwner.noforwards)) {
                     return false;
                 }
             } else {

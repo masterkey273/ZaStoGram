@@ -2381,9 +2381,6 @@
     <string name="DurovLalka">Дуров лалка</string>
     <string name="OurChannel">Наш канал</string>
     <string name="OurVpn">Наш VPN</string>
-    <string name="DonateAndSupport">Донаты &amp; поддержать</string>
-    <string name="ZapretVpnSponsorTitle">Zapret VPNs</string>
-    <string name="ZapretVpnSponsorSubtitle">Спонсор прокси</string>
     <string name="ZapretVpnSponsorSetting">Показывать спонсора прокси</string>
     <string name="ZapretProxySponsorOn">Вкл</string>
     <string name="ZapretProxySponsorOff">Выкл</string>
