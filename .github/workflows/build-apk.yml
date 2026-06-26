@@ -5,7 +5,8 @@ name: Build ZaStoGram APK
 # Как запустить:
 #   1) Вкладка Actions в репозитории -> слева "Build ZaStoGram APK" -> кнопка "Run workflow".
 #   2) Дождаться зелёной галочки (первая сборка ~40-90 мин, потом быстрее за счёт кэша).
-#   3) Внизу страницы запуска -> раздел "Artifacts" -> скачать "ZaStoGram-standalone-afat".
+#   3) Внизу страницы запуска -> раздел "Artifacts" -> скачать APK под архитектуру телефона:
+#      arm64-v8a, armeabi-v7a, x86 или x86_64.
 #      Внутри .zip лежит .apk — переносишь на телефон и ставишь (разреши установку из этого источника).
 #
 # Для реального входа в Telegram добавь свои api_id/api_hash с https://my.telegram.org
@@ -27,6 +28,30 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: Arm64
+            flavor_dir: arm64
+            abi: arm64-v8a
+            artifact: ZaStoGram-standalone-arm64-v8a
+            ccache_key: ccache-arm64-v8a-standalone
+          - flavor: Armv7
+            flavor_dir: armv7
+            abi: armeabi-v7a
+            artifact: ZaStoGram-standalone-armeabi-v7a
+            ccache_key: ccache-armeabi-v7a-standalone
+          - flavor: X86
+            flavor_dir: x86
+            abi: x86
+            artifact: ZaStoGram-standalone-x86
+            ccache_key: ccache-x86-standalone
+          - flavor: X64
+            flavor_dir: x64
+            abi: x86_64
+            artifact: ZaStoGram-standalone-x86_64
+            ccache_key: ccache-x86_64-standalone
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,7 +91,7 @@ jobs:
       - name: Set up ccache (caches native object files across runs)
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ccache-afat-standalone
+          key: ${{ matrix.ccache_key }}
           max-size: 4G
 
       - name: Inject your api_id / api_hash (optional, from repo secrets)
@@ -107,7 +132,7 @@ jobs:
       - name: Reset ccache stats
         run: ccache -z || true
 
-      - name: Build Standalone universal APK
+      - name: Build Standalone APK (${{ matrix.abi }})
         env:
           USE_CCACHE: '1'
           # The NDK is reinstalled every run, so its clang gets a fresh mtime each time.
@@ -126,7 +151,18 @@ jobs:
           if [ -n "$KEYSTORE_PASSWORD" ]; then
             SIGN_ARGS="-PRELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD -PRELEASE_KEY_PASSWORD=${KEY_PASSWORD:-$KEYSTORE_PASSWORD} -PRELEASE_KEY_ALIAS=${KEY_ALIAS:-zastogram}"
           fi
-          ./gradlew --build-cache --profile :TMessagesProj_AppStandalone:assembleAfatStandalone $SIGN_ARGS --stacktrace
+          ./gradlew --build-cache --profile ":TMessagesProj_AppStandalone:assemble${{ matrix.flavor }}Standalone" $SIGN_ARGS --stacktrace
+
+      - name: Stage APK (${{ matrix.abi }})
+        run: |
+          mkdir -p dist
+          APK_DIR="TMessagesProj_AppStandalone/build/outputs/apk/${{ matrix.flavor_dir }}/standalone"
+          APK="$(find "$APK_DIR" -type f -name '*.apk' | head -n 1)"
+          if [ -z "$APK" ]; then
+            echo "::error::No APK produced for ${{ matrix.abi }}"
+            exit 1
+          fi
+          cp "$APK" "dist/${{ matrix.artifact }}.apk"
 
       - name: Show ccache stats
         if: always()
@@ -136,13 +172,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-profile-report
+          name: gradle-profile-report-${{ matrix.abi }}
           path: '**/build/reports/profile/*.html'
           if-no-files-found: ignore
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ZaStoGram-standalone-afat
-          path: '**/build/outputs/apk/**/*.apk'
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.apk
           if-no-files-found: error
