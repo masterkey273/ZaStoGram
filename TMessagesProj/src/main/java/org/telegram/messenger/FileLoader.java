@@ -1214,13 +1214,66 @@ public class FileLoader extends BaseController {
         } else {
             fileName = null;
         }
-        Runnable runnable = () -> loadFileInternal(document, secureDocument, webDocument, location, imageLocation, parentObject, locationExt, locationSize, priority, null, 0, false, cacheType);
         if (cacheType != 10 && !TextUtils.isEmpty(fileName) && !fileName.contains("" + Integer.MIN_VALUE)) {
             LoadOperationUIObject uiObject = new FileLoader.LoadOperationUIObject();
-            uiObject.loadInternalRunnable = runnable;
             loadOperationPathsUI.put(fileName, uiObject);
         }
-        fileLoaderQueue.postRunnable(runnable);
+        final Runnable[] runnableRef = new Runnable[1];
+        runnableRef[0] = () -> {
+            if (maybeDelayProxyStartupLoadFile(document, webDocument, imageLocation, parentObject, priority, cacheType, runnableRef[0])) {
+                return;
+            }
+            loadFileInternal(document, secureDocument, webDocument, location, imageLocation, parentObject, locationExt, locationSize, priority, null, 0, false, cacheType);
+        };
+        if (cacheType != 10 && !TextUtils.isEmpty(fileName) && !fileName.contains("" + Integer.MIN_VALUE)) {
+            LoadOperationUIObject uiObject = loadOperationPathsUI.get(fileName);
+            if (uiObject != null) {
+                uiObject.loadInternalRunnable = runnableRef[0];
+            }
+        }
+        fileLoaderQueue.postRunnable(runnableRef[0]);
+    }
+
+    private boolean maybeDelayProxyStartupLoadFile(final TLRPC.Document document, final WebFile webDocument, final ImageLocation imageLocation, final Object parentObject, final int priority, final int cacheType, final Runnable runnable) {
+        ProxyWarmupGate.NetworkRequestClass requestClass = classifyProxyWarmupRequest(document, webDocument, imageLocation, parentObject, priority, cacheType);
+        if (requestClass == ProxyWarmupGate.NetworkRequestClass.MEDIA_VISIBLE || ProxyWarmupGate.canStartNetworkHeavyOperation(currentAccount, 0, requestClass)) {
+            return false;
+        }
+        long delay = ProxyWarmupGate.delayForNetworkHeavyOperation(currentAccount, 0, requestClass);
+        fileLoaderQueue.postRunnable(runnable, delay > 0 ? delay : 400);
+        return true;
+    }
+
+    private ProxyWarmupGate.NetworkRequestClass classifyProxyWarmupRequest(final TLRPC.Document document, final WebFile webDocument, final ImageLocation imageLocation, final Object parentObject, final int priority, final int cacheType) {
+        if (parentObject instanceof TL_stories.StoryItem && priority <= PRIORITY_LOW) {
+            return ProxyWarmupGate.NetworkRequestClass.STORIES_PREFETCH;
+        }
+        if (isStickerProxyWarmupRequest(document, imageLocation)) {
+            return ProxyWarmupGate.NetworkRequestClass.STICKER_PREFETCH;
+        }
+        if (cacheType == PRELOAD_CACHE_TYPE || webDocument != null && priority <= PRIORITY_LOW) {
+            return ProxyWarmupGate.NetworkRequestClass.MEDIA_PREFETCH;
+        }
+        return ProxyWarmupGate.NetworkRequestClass.MEDIA_VISIBLE;
+    }
+
+    private boolean isStickerProxyWarmupRequest(final TLRPC.Document document, final ImageLocation imageLocation) {
+        if (imageLocation != null) {
+            if (imageLocation.stickerSet != null
+                    || imageLocation.imageType == IMAGE_TYPE_LOTTIE
+                    || imageLocation.imageType == IMAGE_TYPE_SVG
+                    || imageLocation.imageType == IMAGE_TYPE_SVG_WHITE) {
+                return true;
+            }
+            if (imageLocation.document != null) {
+                return isStickerProxyWarmupRequest(imageLocation.document, null);
+            }
+        }
+        return document != null
+                && ("application/x-tgsticker".equals(document.mime_type)
+                || "application/x-tgwallpattern".equals(document.mime_type)
+                || MessageObject.isAnimatedStickerDocument(document, true)
+                || MessageObject.isVideoSticker(document));
     }
 
     protected FileLoadOperation loadStreamFile(final FileLoadOperationStream stream, final TLRPC.Document document, final ImageLocation location, final Object parentObject, final long offset, final boolean priority, int loadingPriority) {

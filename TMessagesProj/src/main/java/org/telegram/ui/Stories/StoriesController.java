@@ -36,6 +36,7 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
+import org.telegram.messenger.ProxyWarmupGate;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.Timer;
@@ -579,6 +580,9 @@ public class StoriesController {
         if (storyItem.attachPath != null) {
             return;
         }
+        if (delayProxyWarmupPrefetch(ProxyWarmupGate.NetworkRequestClass.STORIES_PREFETCH, () -> preloadStory(dialogId, storyItem))) {
+            return;
+        }
         boolean canPreloadStories = DownloadController.getInstance(currentAccount).canPreloadStories();
         if (!canPreloadStories) {
             return;
@@ -604,6 +608,15 @@ public class StoriesController {
                 }
             }
         }
+    }
+
+    private boolean delayProxyWarmupPrefetch(ProxyWarmupGate.NetworkRequestClass requestClass, Runnable runnable) {
+        if (ProxyWarmupGate.canStartNetworkHeavyOperation(currentAccount, 0, requestClass)) {
+            return false;
+        }
+        long delay = ProxyWarmupGate.delayForNetworkHeavyOperation(currentAccount, 0, requestClass);
+        AndroidUtilities.runOnUIThread(runnable, delay > 0 ? delay : 400);
+        return true;
     }
 
     public void uploadStory(StoryEntry entry, boolean count) {

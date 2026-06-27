@@ -52,14 +52,22 @@ def run_runtime_log_checks(failures: list[str]) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         bad = tmp_path / "bad_dns.txt"
+        bad_empty_name = tmp_path / "bad_empty_name_dns.txt"
         good = tmp_path / "good_dns.txt"
         bad.write_text(base + "\nlogcat.txt:6: 06-25 20:31:30.200 E/tmessages FileNotFoundException: https://www.google.com/resolve?name=gosuslugi.v6.rocks&type=A\n", encoding="utf-8")
+        bad_empty_name.write_text(base + "\nlogcat.txt:6: 06-25 20:31:30.200 D/tmessages dns_resolver fallback provider=cloudflare_json_doh host= reason=FileNotFoundException endpoint=https://cloudflare-dns.com/dns-query?name=&type=A\n", encoding="utf-8")
         good.write_text(base + "\nlogcat.txt:6: 06-25 20:31:30.200 D/tmessages dns_resolver fallback provider=google_json_doh host=gosuslugi.v6.rocks reason=FileNotFoundException\n", encoding="utf-8")
         bad_result = subprocess.run([sys.executable, str(RUNTIME_VERIFIER), str(bad)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        bad_empty_name_result = subprocess.run([sys.executable, str(RUNTIME_VERIFIER), str(bad_empty_name)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
         good_result = subprocess.run([sys.executable, str(RUNTIME_VERIFIER), str(good)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
         require(
             bad_result.returncode != 0 and "dns resolver must not log expected DoH fallback as E/tmessages /resolve" in bad_result.stderr,
             "runtime verifier must reject E/tmessages FileNotFoundException ... /resolve",
+            failures,
+        )
+        require(
+            bad_empty_name_result.returncode != 0 and "dns resolver must not build DoH URL with empty name=" in bad_empty_name_result.stderr,
+            "runtime verifier must reject DoH fallback URLs with empty name=",
             failures,
         )
         require(
@@ -137,8 +145,9 @@ def main() -> int:
         and "HOST_RESOLVER_DOH_CONNECT_TIMEOUT_MS = 1000" in connections
         and "HOST_RESOLVER_DOH_READ_TIMEOUT_MS = 1500" in connections
         and "HOST_RESOLVER_TOTAL_TIMEOUT_MS = 3000" in connections
+        and "HOST_RESOLVER_STALE_TTL_MS = 24 * 60 * 60 * 1000L" in connections
         and "remainingDnsBudgetMs(context" in connections,
-        "resolver must bound system DNS, DoH attempts, and total DNS budget",
+        "resolver must bound system DNS, DoH attempts, total DNS budget, and keep stale DNS for 24h",
         failures,
     )
     require(
@@ -146,6 +155,29 @@ def main() -> int:
         and "dnsBudgetExpired(context)" in connections
         and "remainingDnsBudgetMs(context, 1)" not in connections,
         "resolver chain must use an explicit budget-expired check instead of a minimum-clamped remaining timeout",
+        failures,
+    )
+    require(
+        'if (TextUtils.isEmpty(name))' in load_doh
+        and 'throw new UnknownHostException("empty_host")' in load_doh,
+        "DoH loader must reject empty host names before building a URL with name=",
+        failures,
+    )
+    resolve_host = method_body(connections, "private static ResolvedDomain resolveHost")
+    stale_log_idx = resolve_host.find('logDnsResult("cache", "stale_dns_used", host, stale)')
+    chain_failure_idx = resolve_host.find("recordDnsResolveChainFailure(host")
+    require(
+        "if (TextUtils.isEmpty(host))" in resolve_host
+        and 'logDnsResult("chain", "invalid_host", host, null)' in resolve_host,
+        "resolveHost must reject empty hosts before DoH and native callbacks",
+        failures,
+    )
+    require(
+        stale_log_idx >= 0
+        and chain_failure_idx >= 0
+        and stale_log_idx < chain_failure_idx
+        and 'ProxyRuntimeStateStore.recordDnsResolveSuccess(host, "cache_stale")' in resolve_host,
+        "resolver must use stale DNS after resolver-chain failure before recording hard chain failure",
         failures,
     )
     require("tryAndroidDnsResolverA(context.host)" in connections and "tryInetAddressA(context.host)" in connections, "system resolver must try Android DNS before InetAddress", failures)
@@ -170,6 +202,7 @@ def main() -> int:
     )
     require(
         "dns resolver must not log expected DoH fallback as E/tmessages /resolve" in runtime_verifier
+        and "dns resolver must not build DoH URL with empty name=" in runtime_verifier
         and "dns_resolver fallback provider=" in runtime_verifier,
         "runtime verifier must enforce the DNS log acceptance criteria",
         failures,

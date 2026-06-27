@@ -1338,7 +1338,7 @@ public class FileLoadOperation {
     }
 
     public ProxyWarmupGate.NetworkRequestClass proxyWarmupRequestClass() {
-        if (isStory) {
+        if (isStory && getPriority() <= FileLoaderPriorityQueue.PRIORITY_VALUE_LOW) {
             return ProxyWarmupGate.NetworkRequestClass.STORIES_PREFETCH;
         }
         if (isPreloadVideoOperation) {

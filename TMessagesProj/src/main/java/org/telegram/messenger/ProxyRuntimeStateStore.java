@@ -226,12 +226,12 @@ public final class ProxyRuntimeStateStore {
             logControl("decision=held_by_current_proxy_usable source=live_failure phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + ProxyStatusMirror.diagnostic(proxyInfo));
             return ProxyHealthStore.EndpointFailureResult.noop(normalized);
         }
-        if (ProxyPhasePolicy.isPunitiveFailure(normalized)) {
-            ProxyWarmupGate.onProxyFailure(ProxyEndpointKey.liveStage(proxyInfo), normalized, now);
-        }
         if (shouldHoldHostResolveFailureByDnsOutage(proxyInfo, normalized, now)) {
             logControl("decision=dns_outage_hold source=live_failure phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " host=" + dnsHost(proxyInfo) + " failures=" + dnsOutageFailures(proxyInfo, now));
             return ProxyHealthStore.EndpointFailureResult.noop(normalized);
+        }
+        if (ProxyPhasePolicy.isPunitiveFailure(normalized)) {
+            ProxyWarmupGate.onProxyFailure(ProxyEndpointKey.liveStage(proxyInfo), normalized, now);
         }
         ProxyHealthStore.EndpointFailureResult failure = ProxyHealthStore.rememberLiveFailure(proxyInfo, normalized, now);
         if (ProxyPhasePolicy.canRotate(normalized) && failure.rotationAllowed) {

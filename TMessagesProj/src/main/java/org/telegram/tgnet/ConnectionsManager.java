@@ -198,7 +198,7 @@ public class ConnectionsManager extends BaseController {
     private static final int HOST_RESOLVER_DOH_READ_TIMEOUT_MS = 1500;
     private static final int HOST_RESOLVER_TOTAL_TIMEOUT_MS = 3000;
     private static final long HOST_RESOLVER_MAX_FRESH_TTL_MS = 30 * 60 * 1000L;
-    private static final long HOST_RESOLVER_STALE_TTL_MS = 60 * 60 * 1000L;
+    private static final long HOST_RESOLVER_STALE_TTL_MS = 24 * 60 * 60 * 1000L;
 
     private static long lastDnsRequestTime;
 
@@ -1066,6 +1066,7 @@ public class ConnectionsManager extends BaseController {
             }
             if (resolvedDomain != null && resolvedDomain.isFresh(now)) {
                 logDnsResult("cache", "success", hostName, resolvedDomain);
+                ProxyRuntimeStateStore.recordDnsResolveSuccess(hostName, "cache");
                 native_onHostNameResolved(hostName, address, resolvedDomain.getAddress());
             } else {
                 ResolveHostByNameTask task = resolvingHostnameTasks.get(hostName);
@@ -1463,6 +1464,9 @@ public class ConnectionsManager extends BaseController {
     }
 
     private static DohJsonResponse loadDohJson(String endpoint, String name, String type, String extraQuery, int connectTimeout, int readTimeout, AsyncTask<?, ?, ?> task) throws Exception {
+        if (TextUtils.isEmpty(name)) {
+            throw new UnknownHostException("empty_host");
+        }
         StringBuilder urlBuilder = new StringBuilder(endpoint);
         urlBuilder.append("?name=").append(URLEncoder.encode(name, "UTF-8")).append("&type=").append(URLEncoder.encode(type, "UTF-8"));
         if (!TextUtils.isEmpty(extraQuery)) {
@@ -1731,29 +1735,66 @@ public class ConnectionsManager extends BaseController {
     }
 
     private static ResolvedDomain resolveHost(String host, int type, ResolveContext context, AsyncTask<?, ?, ?> task) {
+        if (TextUtils.isEmpty(host)) {
+            logDnsResult("chain", "invalid_host", host, null);
+            return null;
+        }
         ResolvedDomain stale = resolveFromDnsCache(host, false);
+        boolean systemFailed = false;
+        boolean googleFailed = false;
+        boolean cloudflareFailed = false;
         for (HostResolver resolver : HOST_RESOLVER_CHAIN) {
             if ((task != null && task.isCancelled()) || dnsBudgetExpired(context)) {
                 break;
             }
+            String resolverName = resolver.name();
             try {
                 ResolvedDomain resolved = resolver.resolve(host, type, context);
                 if (resolved != null && resolved.hasAddresses()) {
                     logDnsResult(resolver.name(), "success", host, resolved);
+                    ProxyRuntimeStateStore.recordDnsResolveSuccess(host, resolver.name());
                     return resolved;
                 }
+                if (isDnsOutageProvider(resolverName)) {
+                    if ("system".equals(resolverName)) {
+                        systemFailed = true;
+                    } else if ("google_json_doh".equals(resolverName)) {
+                        googleFailed = true;
+                    } else if ("cloudflare_json_doh".equals(resolverName)) {
+                        cloudflareFailed = true;
+                    }
+                    ProxyRuntimeStateStore.recordDnsResolverProviderFailure(host, resolver.name(), "empty");
+                }
             } catch (FileNotFoundException | UnknownHostException | SocketTimeoutException | SSLException e) {
+                if (isDnsOutageProvider(resolverName)) {
+                    if ("system".equals(resolverName)) {
+                        systemFailed = true;
+                    } else if ("google_json_doh".equals(resolverName)) {
+                        googleFailed = true;
+                    } else if ("cloudflare_json_doh".equals(resolverName)) {
+                        cloudflareFailed = true;
+                    }
+                    ProxyRuntimeStateStore.recordDnsResolverProviderFailure(host, resolver.name(), e.getClass().getSimpleName());
+                }
                 FileLog.d("dns_resolver fallback provider=" + resolver.name() + " host=" + host + " reason=" + e.getClass().getSimpleName());
             } catch (Throwable e) {
                 FileLog.e(e, false);
             }
         }
         if (stale != null && stale.isStale(SystemClock.elapsedRealtime())) {
-            logDnsResult("cache", "stale", host, stale);
+            logDnsResult("cache", "stale_dns_used", host, stale);
+            ProxyRuntimeStateStore.recordDnsResolveSuccess(host, "cache_stale");
             return stale;
         }
+        ProxyRuntimeStateStore.recordDnsResolveChainFailure(host, systemFailed, googleFailed, cloudflareFailed);
         logDnsResult("chain", "resolve_failed", host, null);
         return null;
+    }
+
+    private static boolean isDnsOutageProvider(String provider) {
+        return "system".equals(provider)
+                || "google_json_doh".equals(provider)
+                || "cloudflare_json_doh".equals(provider);
     }
 
     private interface HostResolver {

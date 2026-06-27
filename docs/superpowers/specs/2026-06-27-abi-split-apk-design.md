@@ -30,7 +30,9 @@ Each flavor keeps the standalone build type and manifest behavior, but restricts
 
 Keep the existing `afat` flavor as a fallback for local/manual universal builds unless it causes a Gradle conflict.
 
-Each ABI flavor gets a distinct `abiVersionCode` so Android can distinguish produced APKs. The existing `applicationVariants` version-code rule remains the central place that derives the final version code from `APP_VERSION_CODE` and the flavor suffix.
+Each ABI flavor gets a distinct two-digit `abiVersionCode` above the old universal `afat` suffix `9`. The `applicationVariants` version-code rule remains the central place that derives the final version code from `APP_VERSION_CODE` and the flavor suffix, using `APP_VERSION_CODE * 100 + abiVersionCode` so ABI split APKs can update over previously installed universal APKs.
+
+The existing `variantFilter` must also allow the new ABI flavors for the `standalone` build type; otherwise Gradle will not create the matrix task names.
 
 ## GitHub Actions
 

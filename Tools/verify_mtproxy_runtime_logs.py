@@ -18,6 +18,7 @@ CONNECTION_RE = re.compile(r"connection\((0x[0-9a-fA-F]+)\)")
 LOG_TIME_RE = re.compile(r"\b(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d{3})\b")
 PROXY_CONTROL_RE = re.compile(r"proxy_control decision=([^ ]+)")
 FIELD_RE_TEMPLATE = r"(?<![A-Za-z0-9_]){}=([^ ]+)"
+EMPTY_DOH_NAME_RE = re.compile(r"https://[^ ]+/(?:resolve|dns-query)\?name=(?:&|$)")
 DISCONNECT_REQUIRED_FIELDS = (
     "transport_state=",
     "epoll_registered=",
@@ -202,7 +203,7 @@ def verify_dns_outage_rotation_hold(lines: list[str]) -> list[str]:
     failures: list[str] = []
     provider_failures: dict[str, tuple[int | None, set[str]]] = {}
     for line in lines:
-        if "dns_resolver provider=" in line and ("result=success" in line or "result=stale" in line):
+        if "dns_resolver provider=" in line and ("result=success" in line or "result=stale" in line or "result=stale_dns_used" in line):
             host = line_field(line, "host").lower()
             if host:
                 provider_failures.pop(host, None)
@@ -232,6 +233,8 @@ def verify_dns_outage_rotation_hold(lines: list[str]) -> list[str]:
 def verify_dns_resolver_logs(lines: list[str]) -> list[str]:
     failures: list[str] = []
     for line in lines:
+        if EMPTY_DOH_NAME_RE.search(line):
+            failures.append(f"dns resolver must not build DoH URL with empty name=: {line}")
         if "dns_resolver fallback provider=" in line:
             continue
         if "FileNotFoundException" in line and "/resolve" in line and ("E/tmessages" in line or "FileLog.e" in line):
@@ -282,6 +285,22 @@ def verify_startup_warmup_fanout(lines: list[str]) -> list[str]:
         failures.append(
             "stories preload must not create network file requests before usable success: "
             f"{story_network_lines[0]}"
+        )
+
+    sticker_network_lines: list[str] = []
+    for line in before_usable:
+        lower_line = line.lower()
+        if "sticker" not in lower_line and "emoji" not in lower_line and "reaction" not in lower_line:
+            continue
+        if "upload_getfile" in lower_line or "create load operation" in lower_line:
+            sticker_network_lines.append(line)
+            continue
+        if "proxy_warmup" in lower_line and "class=sticker_prefetch" in lower_line and "decision=allow" in lower_line:
+            sticker_network_lines.append(line)
+    if sticker_network_lines:
+        failures.append(
+            "sticker preload must not create network file requests before usable success: "
+            f"{sticker_network_lines[0]}"
         )
 
     for index, line in enumerate(lines):

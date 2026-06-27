@@ -840,11 +840,17 @@ public class MediaDataController extends BaseController {
     }
 
     public void preloadImage(ImageLocation location, int priority) {
+        if (delayProxyWarmupPrefetch(ProxyWarmupGate.NetworkRequestClass.STICKER_PREFETCH, () -> preloadImage(location, priority))) {
+            return;
+        }
         getFileLoader().loadFile(location, null, null, priority, FileLoader.PRELOAD_CACHE_TYPE);
     }
 
     public void preloadImage(ImageReceiver imageReceiver, ImageLocation location, String filter) {
         if (!LiteMode.isEnabled(LiteMode.FLAG_ANIMATED_EMOJI_REACTIONS)) {
+            return;
+        }
+        if (delayProxyWarmupPrefetch(ProxyWarmupGate.NetworkRequestClass.STICKER_PREFETCH, () -> preloadImage(imageReceiver, location, filter))) {
             return;
         }
         imageReceiver.setUniqKeyPrefix("preload");
@@ -8486,6 +8492,9 @@ public class MediaDataController extends BaseController {
     }
 
     public void preloadPremiumPreviewStickers() {
+        if (delayProxyWarmupPrefetch(ProxyWarmupGate.NetworkRequestClass.STICKER_PREFETCH, () -> preloadPremiumPreviewStickers())) {
+            return;
+        }
         if (previewStickersLoading || !premiumPreviewStickers.isEmpty()) {
             for (int i = 0; i < Math.min(premiumPreviewStickers.size(), 3); i++) {
                 TLRPC.Document document = premiumPreviewStickers.get(i == 2 ? premiumPreviewStickers.size() - 1 : i);
@@ -8517,6 +8526,15 @@ public class MediaDataController extends BaseController {
             premiumPreviewStickers.addAll(res.stickers);
             NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.premiumStickersPreviewLoaded);
         }));
+    }
+
+    private boolean delayProxyWarmupPrefetch(ProxyWarmupGate.NetworkRequestClass requestClass, Runnable runnable) {
+        if (ProxyWarmupGate.canStartNetworkHeavyOperation(currentAccount, 0, requestClass)) {
+            return false;
+        }
+        long delay = ProxyWarmupGate.delayForNetworkHeavyOperation(currentAccount, 0, requestClass);
+        AndroidUtilities.runOnUIThread(runnable, delay > 0 ? delay : 400);
+        return true;
     }
 
     public void checkAllMedia(boolean force) {

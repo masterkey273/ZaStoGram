@@ -381,9 +381,10 @@ def main() -> int:
             mark_endpoint_failure,
             "shouldHoldHostResolveFailureByDnsOutage(proxyInfo, normalized, now)",
             "decision=dns_outage_hold",
+            "ProxyWarmupGate.onProxyFailure",
             "ProxyHealthStore.rememberLiveFailure",
         ),
-        "explicit host_resolve_failed endpoint failures must be held by DNS outage before endpoint backoff",
+        "explicit host_resolve_failed endpoint failures must be held by DNS outage before warmup failure or endpoint backoff",
         failures,
     )
     require(

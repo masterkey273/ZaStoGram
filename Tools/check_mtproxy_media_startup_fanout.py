@@ -64,6 +64,7 @@ def run_runtime_log_checks(failures: list[str]) -> None:
         bad_upload = tmp_path / "bad_upload.txt"
         bad_tcp_gate = tmp_path / "bad_tcp_gate.txt"
         bad_story = tmp_path / "bad_story.txt"
+        bad_sticker = tmp_path / "bad_sticker.txt"
         good = tmp_path / "good.txt"
         bad_upload.write_text(
             runtime_log_base(
@@ -91,6 +92,14 @@ def run_runtime_log_checks(failures: list[str]) -> None:
             ),
             encoding="utf-8",
         )
+        bad_sticker.write_text(
+            runtime_log_base(
+                [
+                    "logcat.txt:10: 06-25 20:31:30.040 D/tmessages animated sticker create load operation upload_getFile sticker_id=10",
+                ]
+            ),
+            encoding="utf-8",
+        )
         good.write_text(
             runtime_log_base(
                 [
@@ -109,6 +118,7 @@ def run_runtime_log_checks(failures: list[str]) -> None:
             (bad_upload, "startup fanout before first usable success"),
             (bad_tcp_gate, "tcp_connect_gate before first usable success"),
             (bad_story, "stories preload must not create network file requests before usable success"),
+            (bad_sticker, "sticker preload must not create network file requests before usable success"),
         )
         for path, expected in cases:
             result = subprocess.run([sys.executable, str(RUNTIME_VERIFIER), str(path)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
@@ -134,6 +144,8 @@ def main():
     loader = read(MESSENGER / "FileLoader.java")
     queue = read(MESSENGER / "FileLoaderPriorityQueue.java")
     operation = read(MESSENGER / "FileLoadOperation.java")
+    media = read(MESSENGER / "MediaDataController.java")
+    stories = read(ROOT / "TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java")
     all_checks = read(TOOLS / "check_mtproxy_all.py")
     verifier = read(RUNTIME_VERIFIER)
     mark_usable = method_body(runtime, "public static void markConnectionUsable(SharedConfig.ProxyInfo proxyInfo, String diagnostic, long now)")
@@ -210,12 +222,22 @@ def main():
     require(
         "new FileLoaderPriorityQueue(instance, this," in loader
         and "canStartProxyStartupMediaOperation" in loader
+        and "maybeDelayProxyStartupLoadFile" in loader
+        and "classifyProxyWarmupRequest" in loader
         and "scheduleProxyStartupFanoutRecheck" in loader
         and "countProxyStartupActiveLoadOperations" in loader
         and "ProxyWarmupGate.canStartNetworkHeavyOperation" in loader
         and "ProxyWarmupGate.maxActiveMediaRequestsPerEndpoint" in loader
         and "ProxyWarmupGate.delayForNetworkHeavyOperation" in loader,
-        "FileLoader must enforce an account-wide startup media operation gate across all DC queues through ProxyWarmupGate",
+        "FileLoader must delay prefetch operation creation and enforce an account-wide startup media operation gate across all DC queues through ProxyWarmupGate",
+        failures,
+    )
+    require(
+        "ProxyWarmupGate.NetworkRequestClass.STORIES_PREFETCH" in loader
+        and "ProxyWarmupGate.NetworkRequestClass.STICKER_PREFETCH" in loader
+        and "ProxyWarmupGate.NetworkRequestClass.MEDIA_PREFETCH" in loader
+        and "ProxyWarmupGate.NetworkRequestClass.MEDIA_VISIBLE" in loader,
+        "FileLoader must classify stories, stickers, media prefetch, and visible media before creating load operations",
         failures,
     )
     require(
@@ -242,6 +264,26 @@ def main():
         and "count(tcp_connect_gate) > 5" in verifier
         and "stories preload must not create network file requests before usable success" in verifier,
         "runtime verifier must enforce startup fanout acceptance criteria before first usable success",
+        failures,
+    )
+    require(
+        "sticker preload must not create network file requests before usable success" in verifier
+        and "proxy_warmup state=usable decision=ramp" in verifier,
+        "runtime verifier must reject sticker prefetch creation before usable and require ramp to happen after usable",
+        failures,
+    )
+    require(
+        "delayProxyWarmupPrefetch" in media
+        and "ProxyWarmupGate.NetworkRequestClass.STICKER_PREFETCH" in media
+        and "preloadPremiumPreviewStickers" in media,
+        "MediaDataController must delay sticker/reaction preview prefetch until MTProxy warmup allows it",
+        failures,
+    )
+    require(
+        "delayProxyWarmupPrefetch" in stories
+        and "ProxyWarmupGate.NetworkRequestClass.STORIES_PREFETCH" in stories
+        and "preloadStory" in stories,
+        "StoriesController must delay story preload file requests until MTProxy warmup allows them",
         failures,
     )
     require(
