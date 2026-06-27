@@ -45,8 +45,14 @@ public class ProxyCheckDiagnostics {
     public static final String TCP_NOT_CONNECTED = "tcp_not_connected";
     public static final String TCP_CONNECTED_NO_PONG = "tcp_connected_no_pong";
     public static final String NETWORK_BLOCK_SUSPECTED = "network_block_suspected";
+    public static final String SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR = "secret_parse_invalid_domain_control_char";
+    public static final String SECRET_PARSE_INVALID_DOMAIN = "secret_parse_invalid_domain";
     public static final String CLIENT_HELLO_SENT_NO_SERVER_HELLO = "client_hello_sent_no_server_hello";
+    public static final String TLS_ALERT_AFTER_CLIENT_HELLO = "tls_alert_after_client_hello";
+    public static final String SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO = "short_tls_response_after_client_hello";
+    public static final String UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO = "unrecognized_tls_response_after_client_hello";
     public static final String SERVER_HELLO_HMAC_MISMATCH = "server_hello_hmac_mismatch";
+    public static final String UNSUPPORTED_FOR_CURRENT_CLIENT = "unsupported_for_current_client";
     public static final String MTPROXY_PACKET_SENT_NO_RESPONSE = "mtproxy_packet_sent_no_response";
     public static final String POST_HANDSHAKE_NO_APPDATA = "post_handshake_no_appdata";
     public static final String DROPPED_EARLY_AFTER_APPDATA = "dropped_early_after_appdata";
@@ -93,8 +99,14 @@ public class ProxyCheckDiagnostics {
             case TCP_NOT_CONNECTED:
             case TCP_CONNECTED_NO_PONG:
             case NETWORK_BLOCK_SUSPECTED:
+            case SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
+            case SECRET_PARSE_INVALID_DOMAIN:
             case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
+            case TLS_ALERT_AFTER_CLIENT_HELLO:
+            case SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO:
+            case UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case SERVER_HELLO_HMAC_MISMATCH:
+            case UNSUPPORTED_FOR_CURRENT_CLIENT:
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
             case POST_HANDSHAKE_NO_APPDATA:
             case DROPPED_EARLY_AFTER_APPDATA:
@@ -352,10 +364,22 @@ public class ProxyCheckDiagnostics {
                 return title("ProxyStatusTcpConnectedNoPong", R.string.ProxyStatusTcpConnectedNoPong);
             case NETWORK_BLOCK_SUSPECTED:
                 return title("ProxyStatusNetworkBlockSuspected", R.string.ProxyStatusNetworkBlockSuspected);
+            case SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
+                return title("ProxyStatusSecretInvalidDomainControlChar", R.string.ProxyStatusSecretInvalidDomainControlChar);
+            case SECRET_PARSE_INVALID_DOMAIN:
+                return title("ProxyStatusSecretInvalidDomain", R.string.ProxyStatusSecretInvalidDomain);
             case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
                 return title("ProxyStatusClientHelloNoServerHello", R.string.ProxyStatusClientHelloNoServerHello);
+            case TLS_ALERT_AFTER_CLIENT_HELLO:
+                return title("ProxyStatusTlsAlertAfterClientHello", R.string.ProxyStatusTlsAlertAfterClientHello);
+            case SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO:
+                return title("ProxyStatusShortTlsResponseAfterClientHello", R.string.ProxyStatusShortTlsResponseAfterClientHello);
+            case UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
+                return title("ProxyStatusUnrecognizedTlsResponseAfterClientHello", R.string.ProxyStatusUnrecognizedTlsResponseAfterClientHello);
             case SERVER_HELLO_HMAC_MISMATCH:
                 return title("ProxyStatusServerHelloHmacMismatch", R.string.ProxyStatusServerHelloHmacMismatch);
+            case UNSUPPORTED_FOR_CURRENT_CLIENT:
+                return title("ProxyStatusUnsupportedForCurrentClient", R.string.ProxyStatusUnsupportedForCurrentClient);
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
                 return title("ProxyStatusMtproxyPacketSentNoResponse", R.string.ProxyStatusMtproxyPacketSentNoResponse);
             case POST_HANDSHAKE_NO_APPDATA:
@@ -473,10 +497,22 @@ public class ProxyCheckDiagnostics {
                 return LocaleController.getString(R.string.ProxyStatusTcpConnectedNoPong);
             case NETWORK_BLOCK_SUSPECTED:
                 return LocaleController.getString(R.string.ProxyStatusNetworkBlockSuspected);
+            case SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
+                return LocaleController.getString(R.string.ProxyStatusSecretInvalidDomainControlChar);
+            case SECRET_PARSE_INVALID_DOMAIN:
+                return LocaleController.getString(R.string.ProxyStatusSecretInvalidDomain);
             case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
                 return LocaleController.getString(R.string.ProxyStatusClientHelloNoServerHello);
+            case TLS_ALERT_AFTER_CLIENT_HELLO:
+                return LocaleController.getString(R.string.ProxyStatusTlsAlertAfterClientHello);
+            case SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO:
+                return LocaleController.getString(R.string.ProxyStatusShortTlsResponseAfterClientHello);
+            case UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
+                return LocaleController.getString(R.string.ProxyStatusUnrecognizedTlsResponseAfterClientHello);
             case SERVER_HELLO_HMAC_MISMATCH:
                 return LocaleController.getString(R.string.ProxyStatusServerHelloHmacMismatch);
+            case UNSUPPORTED_FOR_CURRENT_CLIENT:
+                return LocaleController.getString(R.string.ProxyStatusUnsupportedForCurrentClient);
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
                 return LocaleController.getString(R.string.ProxyStatusMtproxyPacketSentNoResponse);
             case POST_HANDSHAKE_NO_APPDATA:

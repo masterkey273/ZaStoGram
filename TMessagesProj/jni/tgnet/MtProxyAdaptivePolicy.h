@@ -48,6 +48,7 @@ public:
     static int32_t resolveEffectiveTlsProfile(int32_t profile, const std::string &key);
     static RotateResult rotateTlsProfileOnFailureIfNeeded(const std::string &key, const std::string &diagnostic, int32_t previousProfile);
     static bool failureNeedsRecipe(const std::string &diagnostic);
+    static int32_t compatibilityTlsProfile(int32_t configuredProfile, int32_t effectiveProfile, int32_t recipeLevel);
     static int32_t adaptiveTlsProfile(int32_t configuredProfile, int32_t effectiveProfile);
 };
 

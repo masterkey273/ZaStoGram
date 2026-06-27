@@ -32,8 +32,7 @@ PUNITIVE_ROTATION_PHASES = (
     "host_resolve_failed",
     "host_resolve_timeout",
     "tcp_connected_no_pong",
-    "client_hello_sent_no_server_hello",
-    "server_hello_hmac_mismatch",
+    "unsupported_for_current_client",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
     "dropped_early_after_appdata",
@@ -147,16 +146,16 @@ def run_runtime_rotation_log_checks(failures: list[str]) -> None:
         )
         rotated_away_bad.write_text(
             runtime_log_fixture(
-                "06-25 20:34:00.000 proxy_rotation decision=waiting_hysteresis phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=1 required=2",
-                "06-25 20:34:00.900 proxy_rotation decision=trigger phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=2 required=2",
+                "06-25 20:34:00.000 proxy_rotation decision=waiting_hysteresis phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=1 required=2",
+                "06-25 20:34:00.900 proxy_rotation decision=trigger phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=2 required=2",
                 "06-25 20:34:01.050 proxy_control decision=visible_only source=native_stage account=0 phase=endpoint_cooldown endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
             ),
             encoding="utf-8",
         )
         rotated_away_good.write_text(
             runtime_log_fixture(
-                "06-25 20:34:00.000 proxy_rotation decision=waiting_hysteresis phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=1 required=2",
-                "06-25 20:34:00.900 proxy_rotation decision=trigger phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=2 required=2",
+                "06-25 20:34:00.000 proxy_rotation decision=waiting_hysteresis phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=1 required=2",
+                "06-25 20:34:00.900 proxy_rotation decision=trigger phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=2 required=2",
                 "06-25 20:34:01.050 proxy_control decision=ignored_rotated_away source=native_stage account=0 phase=endpoint_cooldown endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
             ),
             encoding="utf-8",

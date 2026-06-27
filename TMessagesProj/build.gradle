@@ -87,7 +87,10 @@ dependencies {
     // Supports Android 4.4(ART)-15 on arm64/armv7. The :xposed module exposes
     // XC_MethodHook (before/afterHookedMethod + MethodHookParam) used by the bridge.
     implementation 'top.canyie.pine:core:0.3.0'
-    implementation 'top.canyie.pine:xposed:0.3.0'
+    // NOTE: the :xposed compat module's latest published version is 0.2.0 (there is no 0.3.0).
+    // 0.2.0 declares no dependency on :core, so it coexists with core:0.3.0. If runtime ART
+    // hooking ever misbehaves from version skew, pin core down to 0.2.9 to match.
+    implementation 'top.canyie.pine:xposed:0.2.0'
 
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }
@@ -127,6 +130,13 @@ android {
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
         multiDexEnabled true
+
+        // ZaStoGram: Chaquopy (applied to this library module) requires ndk.abiFilters to know
+        // which ABIs to bundle CPython for. App flavors still narrow each APK to its own ABI;
+        // 'afat' (the CI authority) uses all four anyway.
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+        }
 
         externalNativeBuild {
             cmake {

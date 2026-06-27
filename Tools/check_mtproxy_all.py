@@ -22,6 +22,7 @@ CHECKS = [
     "check_mtproxy_endpoint_resilience_layers.py",
     "check_mtproxy_plain_dd_lifecycle.py",
     "check_mtproxy_phase_contract.py",
+    "check_mtproxy_compatibility_recipe.py",
     "check_mtproxy_resilience_contract.py",
     "check_mtproxy_rotation_and_soft_mux.py",
     "check_mtproxy_transport_state.py",

@@ -88,12 +88,13 @@ public final class PluginRequestInterceptor {
                     try {
                         Object out = PluginsController.getInstance()
                                 .dispatchPostRequest(name, account, response, error);
-                        if (out == null) {
+                        if (CANCEL_SENTINEL.equals(out)) {
                             return; // HookStrategy.CANCEL — swallow the response
                         }
                         if (out instanceof TLObject) {
                             deliver = (TLObject) out;
                         }
+                        // else out == null: pass-through — deliver the original response (may be null on error)
                     } catch (Throwable t) {
                         FileLog.e(t);
                     }

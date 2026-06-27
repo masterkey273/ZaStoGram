@@ -511,16 +511,16 @@ def main():
         "endpoint data-path success helper must reject non-appdata reasons before clearing endpoint cooldown/backoff",
     )
     require(
-        "MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL = 3" in endpoint_policy,
-        "phase-adaptive recipe must have three levels: fragmentation, Android profile, quiet startup",
+        "MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL = 4" in endpoint_policy,
+        "phase-adaptive recipe must have four levels: no-fragment, compatibility profiles, quiet startup, then endpoint exhaustion",
     )
     recipe_apply_start = socket.find("void ConnectionSocket::applyMtProxyPhaseAdaptiveRecipe")
     recipe_apply_end = socket.find("void ConnectionSocket::markProxyHandshakeClientHelloSent", recipe_apply_start)
     recipe_apply_body = socket[recipe_apply_start:recipe_apply_end]
     adaptive_policy = (ROOT / "TMessagesProj/jni/tgnet/MtProxyAdaptivePolicy.cpp").read_text(encoding="utf-8", errors="replace")
     generic_recipe_start = adaptive_policy.find("if (input.recipeLevel >= 1 && result.clientHelloFragmentation")
-    fragment_step = adaptive_policy.find("result.clientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT", generic_recipe_start)
-    profile_step = adaptive_policy.find("result.effectiveTlsProfile = adaptiveTlsProfile", fragment_step)
+    fragment_step = adaptive_policy.find("result.clientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF", generic_recipe_start)
+    profile_step = adaptive_policy.find("result.effectiveTlsProfile = compatibilityTlsProfile", fragment_step)
     quiet_step = adaptive_policy.find("result.connectionPatternMode = MT_PROXY_CONNECTION_PATTERN_QUIET", profile_step)
     require(
         generic_recipe_start != -1
@@ -528,7 +528,7 @@ def main():
         and profile_step != -1
         and quiet_step != -1
         and fragment_step < profile_step < quiet_step,
-        "phase-adaptive recipe must progress in order: fragmentation, Android profile, then quieter startup",
+        "phase-adaptive recipe must progress in order: no-fragment, compatibility profile, then quieter startup",
     )
     require(
         "result.connectionPatternMode == MT_PROXY_CONNECTION_PATTERN_BROWSER" in adaptive_policy
@@ -536,18 +536,18 @@ def main():
         "phase-adaptive quiet-start step must make Browser mode quieter after repeated post-ClientHello failures",
     )
     require(
-        "adaptiveTlsProfile" in adaptive_policy
-        and "result.effectiveTlsProfile = adaptiveTlsProfile" in adaptive_policy,
-        "phase-adaptive recipe must switch Auto/AutoRotate to another stable Android TLS profile",
+        "compatibilityTlsProfile" in adaptive_policy
+        and "result.effectiveTlsProfile = compatibilityTlsProfile" in adaptive_policy,
+        "phase-adaptive recipe must switch to another known-compatible TLS profile",
     )
     require(
-        "MT_PROXY_TLS_PROFILE_CHROME_MODERN" in adaptive_policy
+        "MT_PROXY_TLS_PROFILE_ANDROID_CHROME" in adaptive_policy
         and "MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID" in adaptive_policy,
-        "phase-adaptive ClientHello failures must be able to switch to the Chrome Modern TLS profile",
+        "phase-adaptive ClientHello failures must be able to switch between Android Chrome and Firefox Android TLS profiles",
     )
     require(
-        "input.recipeLevel >= 3" in adaptive_policy and "MT_PROXY_CONNECTION_PATTERN_QUIET" in adaptive_policy,
-        "quiet startup must be the third phase-adaptive step, after profile adaptation",
+        "input.recipeLevel >= 4" in adaptive_policy and "MT_PROXY_CONNECTION_PATTERN_QUIET" in adaptive_policy,
+        "quiet startup must wait until the fourth phase-adaptive step, after no-fragment and profile adaptation",
     )
     require(
         "input.lastDiagnostic == \"post_handshake_no_appdata\"" in adaptive_policy

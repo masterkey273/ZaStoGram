@@ -83,7 +83,7 @@ class BasePlugin:
     # ------------------------------------------------------------------ high-level hooks
 
     def pre_request_hook(self, request_name, account, request):
-        """Called before an outgoing request is sent (override to inspect/cancel)."""
+        """Reserved: not yet dispatched by the host. Only post_request_hook currently fires."""
         return HookResult(strategy=HookStrategy.DEFAULT)
 
     def post_request_hook(self, request_name, account, response, error):

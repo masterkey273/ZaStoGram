@@ -107,7 +107,7 @@ public final class ProxyRuntimeStateStore {
         ProxyHealthStore.EndpointFailureResult failure = ProxyHealthStore.rememberLiveFailure(currentProxy, event.phase, event.timestamp);
         if (ProxyPhasePolicy.canRotate(event.phase) && failure.rotationAllowed) {
             ProxyHealthStore.quarantineExactEndpoint(currentProxy, event.phase, event.timestamp);
-            ProxyHealthStore.ignoreEndpointTelemetry(event.endpointKey, event.timestamp);
+            ProxyHealthStore.ignoreEndpointTelemetry(event.endpointKey, event.timestamp, event.phase);
             ProxyCheckScheduler.cancelEndpointAttempts(event.endpointKey);
             logControl("decision=rotation_trigger source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey);
             return new Decision("rotation_trigger", event.phase, event.endpointKey, true, visibleChanged, false);
@@ -314,6 +314,10 @@ public final class ProxyRuntimeStateStore {
         }
         String normalized = ProxyCheckDiagnostics.normalize(diagnostic);
         clearPendingDnsVisiblePhase(ProxyEndpointKey.liveStage(proxyInfo), now);
+        if (ProxyHealthStore.isEndpointRotatedAway(proxyInfo, now)) {
+            logControl("decision=ignored_rotated_away source=usable_success phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo));
+            return;
+        }
         ProxyStatusMirror.markConnectionUsable(proxyInfo, normalized, now);
         ProxyHealthStore.clearEndpointBackoff(proxyInfo, normalized, now);
         ProxyStatusMirror.clearTransientState(proxyInfo);

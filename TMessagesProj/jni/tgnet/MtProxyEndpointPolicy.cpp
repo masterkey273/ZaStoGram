@@ -22,8 +22,10 @@ static constexpr int64_t MT_PROXY_ENDPOINT_TCP_CONNECT_GATE_REPEAT_MS = 2200;
 static constexpr int64_t MT_PROXY_ENDPOINT_INTERACTIVE_NETWORK_COOLDOWN_MAX_MS = 3500;
 static constexpr int64_t MT_PROXY_ENDPOINT_MEDIA_NETWORK_COOLDOWN_MAX_MS = 5000;
 static constexpr int64_t MT_PROXY_ENDPOINT_HEAVY_NETWORK_COOLDOWN_MAX_MS = 9000;
+static constexpr int64_t MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_MIN_MS = 15 * 60 * 1000;
+static constexpr int64_t MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_JITTER_MS = 15 * 60 * 1000;
 static constexpr int64_t MT_PROXY_ENDPOINT_USABLE_SUCCESS_HOLD_MS = 45 * 1000;
-static constexpr int32_t MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL = 3;
+static constexpr int32_t MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL = 4;
 
 struct MtProxyEndpointResilienceState {
     int64_t lastSuccessTime = 0;
@@ -34,6 +36,7 @@ struct MtProxyEndpointResilienceState {
     int32_t plainNoResponseFailures = 0;
     int32_t postHandshakeFailures = 0;
     int32_t recipeLevel = 0;
+    int32_t workingRecipeLevel = 0;
     std::string lastRecipeDiagnostic;
     int32_t activeTcpConnects = 0;
 };
@@ -68,6 +71,9 @@ static uint32_t endpointSecureRandomBounded(uint32_t bound) {
 
 static int64_t cooldownMs(MtProxyEndpointResilienceState &state, const std::string &diagnostic, int32_t mode, int32_t priority) {
     mode = normalizeMtProxyConnectionPatternOption(mode);
+    if (diagnostic == "unsupported_for_current_client") {
+        return MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_MIN_MS + endpointSecureRandomBounded((uint32_t) MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_JITTER_MS);
+    }
     int32_t penalty = 1;
     bool networkFailure = diagnostic == "host_resolve_failed" || diagnostic == "host_resolve_timeout" || diagnostic == "tcp_not_connected";
     if (diagnostic == "host_resolve_failed" || diagnostic == "host_resolve_timeout") {
@@ -142,7 +148,11 @@ static bool failureCanBeShadowedBySuccess(const std::string &diagnostic) {
             || diagnostic == "tcp_not_connected"
             || diagnostic == "tcp_connected_no_pong"
             || diagnostic == "client_hello_sent_no_server_hello"
+            || diagnostic == "tls_alert_after_client_hello"
+            || diagnostic == "short_tls_response_after_client_hello"
+            || diagnostic == "unrecognized_tls_response_after_client_hello"
             || diagnostic == "server_hello_hmac_mismatch"
+            || diagnostic == "unsupported_for_current_client"
             || diagnostic == "mtproxy_packet_sent_no_response"
             || diagnostic == "post_handshake_no_appdata";
 }
@@ -241,8 +251,7 @@ bool MtProxyEndpointPolicy::failureNeedsCooldown(const std::string &diagnostic) 
            || diagnostic == "host_resolve_timeout"
            || diagnostic == "tcp_not_connected"
            || diagnostic == "tcp_connected_no_pong"
-           || diagnostic == "client_hello_sent_no_server_hello"
-           || diagnostic == "server_hello_hmac_mismatch"
+           || diagnostic == "unsupported_for_current_client"
            || diagnostic == "mtproxy_packet_sent_no_response"
            || diagnostic == "post_handshake_no_appdata"
            || diagnostic == "dropped_early_after_appdata";
@@ -250,6 +259,9 @@ bool MtProxyEndpointPolicy::failureNeedsCooldown(const std::string &diagnostic) 
 
 bool MtProxyEndpointPolicy::failureNeedsRecipe(const std::string &diagnostic) {
     return diagnostic == "client_hello_sent_no_server_hello"
+           || diagnostic == "tls_alert_after_client_hello"
+           || diagnostic == "short_tls_response_after_client_hello"
+           || diagnostic == "unrecognized_tls_response_after_client_hello"
            || diagnostic == "server_hello_hmac_mismatch"
            || diagnostic == "post_handshake_no_appdata";
 }
@@ -382,6 +394,7 @@ MtProxyEndpointPolicy::FailureResult MtProxyEndpointPolicy::recordFailure(const 
             auto stateIt = proxyEndpointResilience.find(result.stateKey);
             if (stateIt != proxyEndpointResilience.end()) {
                 result.recipeLevel = stateIt->second.recipeLevel;
+                result.cachedRecipeLevel = stateIt->second.workingRecipeLevel;
             }
             result.shadowedByUsableSuccess = true;
             result.recorded = true;
@@ -397,13 +410,19 @@ MtProxyEndpointPolicy::FailureResult MtProxyEndpointPolicy::recordFailure(const 
         }
     }
     result.recipeLevel = state.recipeLevel;
+    result.cachedRecipeLevel = state.workingRecipeLevel;
     if (context.fakeTls && failureNeedsRecipe(phase) && !context.endpointKey.empty()) {
         MtProxyEndpointResilienceState &recipeState = proxyEndpointResilience[context.endpointKey];
-        if (recipeState.recipeLevel < MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL) {
-            recipeState.recipeLevel++;
+        int32_t previousRecipeLevel = recipeState.recipeLevel > 0 ? recipeState.recipeLevel : recipeState.workingRecipeLevel;
+        if (previousRecipeLevel >= MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL) {
+            recipeState.recipeLevel = MT_PROXY_ENDPOINT_RECIPE_MAX_LEVEL;
+            result.recipeExhausted = true;
+        } else {
+            recipeState.recipeLevel = previousRecipeLevel + 1;
         }
         recipeState.lastRecipeDiagnostic = phase;
         result.recipeLevel = recipeState.recipeLevel;
+        result.cachedRecipeLevel = recipeState.workingRecipeLevel;
     }
     pthread_mutex_unlock(&mtProxyEndpointPolicyMutex);
     result.recorded = true;
@@ -439,6 +458,12 @@ MtProxyEndpointPolicy::DataPathSuccessResult MtProxyEndpointPolicy::recordDataPa
     }
     pthread_mutex_lock(&mtProxyEndpointPolicyMutex);
     resetStateForKey(context.networkEndpointKey, now, false);
+    if (!context.endpointKey.empty()) {
+        MtProxyEndpointResilienceState &recipeState = proxyEndpointResilience[context.endpointKey];
+        recipeState.workingRecipeLevel = recipeState.recipeLevel;
+        result.cachedRecipeLevel = recipeState.workingRecipeLevel;
+        result.cachedRecipe = result.cachedRecipeLevel > 0;
+    }
     resetStateForKey(context.endpointKey, now, true);
     pthread_mutex_unlock(&mtProxyEndpointPolicyMutex);
     result.accepted = true;
@@ -450,7 +475,7 @@ int32_t MtProxyEndpointPolicy::recipeLevelForEndpoint(const std::string &endpoin
     pthread_mutex_lock(&mtProxyEndpointPolicyMutex);
     auto it = proxyEndpointResilience.find(endpointKey);
     if (it != proxyEndpointResilience.end()) {
-        recipeLevel = it->second.recipeLevel;
+        recipeLevel = it->second.recipeLevel > 0 ? it->second.recipeLevel : it->second.workingRecipeLevel;
     }
     pthread_mutex_unlock(&mtProxyEndpointPolicyMutex);
     return recipeLevel;

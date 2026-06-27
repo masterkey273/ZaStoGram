@@ -8,7 +8,7 @@ from android_utils import run_on_ui_thread, log
 def _show(kind, text):
     def go():
         try:
-            factory = BulletinFactory.global()
+            factory = BulletinFactory.global_()  # 'global' is a Python keyword; Chaquopy escapes it as global_
             if factory is None:
                 return
             if kind == "error":

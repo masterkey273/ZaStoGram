@@ -43,14 +43,18 @@ public:
     struct FailureResult {
         bool recorded = false;
         bool shadowedByUsableSuccess = false;
+        bool recipeExhausted = false;
         std::string stateKey;
         int64_t cooldownMs = 0;
         int64_t usableSuccessRemainingMs = 0;
         int32_t recipeLevel = 0;
+        int32_t cachedRecipeLevel = 0;
     };
 
     struct DataPathSuccessResult {
         bool accepted = false;
+        bool cachedRecipe = false;
+        int32_t cachedRecipeLevel = 0;
     };
 
     static bool extractSslipIpv4Address(const std::string &host, struct in_addr *address, std::string *literalAddress);

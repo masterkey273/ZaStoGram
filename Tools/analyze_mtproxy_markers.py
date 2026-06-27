@@ -74,8 +74,14 @@ FAKETLS_FAILURE_VERDICTS = {
     "dns_budget_stolen_by_pre_tcp_wait",
     "tcp_not_connected",
     "tcp_connected_no_pong",
+    "secret_parse_invalid_domain_control_char",
+    "secret_parse_invalid_domain",
     "client_hello_sent_no_server_hello",
+    "tls_alert_after_client_hello",
+    "short_tls_response_after_client_hello",
+    "unrecognized_tls_response_after_client_hello",
     "server_hello_hmac_mismatch",
+    "unsupported_for_current_client",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
     "dropped_early_after_appdata",
@@ -320,6 +326,9 @@ class Attempt:
             "tcp_connect_gate_timeout": "tcp_connect_gate_timeout",
             "tcp_not_connected": "tcp_not_connected",
             "tcp_connected_no_pong": "tcp_connected_no_pong",
+            "secret_parse_invalid_domain_control_char": "secret_parse_invalid_domain_control_char",
+            "secret_parse_invalid_domain": "secret_parse_invalid_domain",
+            "secret_domain_invalid": "secret_domain_invalid",
             "socket_connect_start": "socket_connect_start",
             "socket_connected": "socket_connected",
             "client_hello_send_progress": "client_hello_send_progress",
@@ -329,6 +338,13 @@ class Attempt:
             "server_data_before_client_hello_complete": "server_data_before_client_hello_complete",
             "client_hello_sent": "client_hello_sent",
             "client_hello_sent_no_server_hello": "client_hello_sent_no_server_hello",
+            "mtproxy_tls_after_client_hello": "mtproxy_tls_after_client_hello",
+            "tls_alert_after_client_hello": "tls_alert_after_client_hello",
+            "short_tls_response_after_client_hello": "short_tls_response_after_client_hello",
+            "unrecognized_tls_response_after_client_hello": "unrecognized_tls_response_after_client_hello",
+            "post_client_hello_response_failed": "post_client_hello_response_failed",
+            "unsupported_for_current_client": "unsupported_for_current_client",
+            "recipe_exhausted": "recipe_exhausted",
             "endpoint_cooldown": "endpoint_cooldown",
             "tcp_connect_gate": "tcp_connect_gate",
             "tcp_connect_gate_wait": "tcp_connect_gate_wait",
@@ -448,9 +464,21 @@ class Attempt:
             return "tcp_not_connected"
         if has("tcp_connected_no_pong"):
             return "tcp_connected_no_pong"
+        if has("secret_parse_invalid_domain_control_char"):
+            return "secret_parse_invalid_domain_control_char"
+        if has("secret_parse_invalid_domain"):
+            return "secret_parse_invalid_domain"
         if not has("client_hello_sent"):
             return "tcp_connected_no_pong"
         if not has("server_hello_hmac_ok"):
+            if has("unsupported_for_current_client"):
+                return "unsupported_for_current_client"
+            if has("tls_alert_after_client_hello"):
+                return "tls_alert_after_client_hello"
+            if has("short_tls_response_after_client_hello"):
+                return "short_tls_response_after_client_hello"
+            if has("unrecognized_tls_response_after_client_hello"):
+                return "unrecognized_tls_response_after_client_hello"
             if has("server_hello_hmac_mismatch") or has("server_hello_hmac_timeout") or has("server_hello_hmac_wait"):
                 return "server_hello_hmac_mismatch"
             if has("client_hello_sent_no_server_hello") or has("server_hello_timeout_close") or has("admission_freeze_detected"):
@@ -1081,8 +1109,12 @@ def print_layer_recommendations(attempts: list[Attempt], all_lines: list[str]) -
     print(
         "  "
         f"faketls_handshake_recipe client_hello_sent_no_server_hello={faketls_verdicts['client_hello_sent_no_server_hello']} "
+        f"tls_alert_after_client_hello={faketls_verdicts['tls_alert_after_client_hello']} "
+        f"short_tls_response_after_client_hello={faketls_verdicts['short_tls_response_after_client_hello']} "
+        f"unrecognized_tls_response_after_client_hello={faketls_verdicts['unrecognized_tls_response_after_client_hello']} "
         f"server_hello_hmac_mismatch={faketls_verdicts['server_hello_hmac_mismatch']} "
-        "action=profile_fragmentation_connection_pattern"
+        f"unsupported_for_current_client={faketls_verdicts['unsupported_for_current_client']} "
+        "action=compatibility_recipe_ladder"
     )
     print(
         "  "
@@ -1208,6 +1240,9 @@ def print_faketls_reliability_summary(attempts: list[Attempt]) -> None:
             f"{profile}: total={len(items)} ok={verdicts['ok']} ok_rate={ok_percent(verdicts['ok'], len(items))} "
             f"idle_handshake={verdicts['handshake_ok_no_appdata_sent']} "
             f"pre_server_hello={verdicts['client_hello_sent_no_server_hello']} "
+            f"tls_alert={verdicts['tls_alert_after_client_hello']} "
+            f"short_tls={verdicts['short_tls_response_after_client_hello']} "
+            f"unrecognized_tls={verdicts['unrecognized_tls_response_after_client_hello']} "
             f"post_handshake={verdicts['post_handshake_no_appdata']} "
             f"early_drop={verdicts['dropped_early_after_appdata']} "
             f"tls_frames={sum(item.completed_tls_frames() for item in items)} "
@@ -1277,7 +1312,11 @@ def print_faketls_failure_timeline(attempts: list[Attempt]) -> None:
         and attempt.verdict()
         in {
             "client_hello_sent_no_server_hello",
+            "tls_alert_after_client_hello",
+            "short_tls_response_after_client_hello",
+            "unrecognized_tls_response_after_client_hello",
             "server_hello_hmac_mismatch",
+            "unsupported_for_current_client",
             "post_handshake_no_appdata",
         }
     ]
@@ -1403,6 +1442,9 @@ def write_csv_reports(attempts: list[Attempt], global_lines: list[str], out_dir:
                 "ok": verdicts["ok"],
                 "ok_percent": ok_percent(verdicts["ok"], len(items)),
                 "pre_server_hello": verdicts["client_hello_sent_no_server_hello"],
+                "tls_alert_after_client_hello": verdicts["tls_alert_after_client_hello"],
+                "short_tls_response_after_client_hello": verdicts["short_tls_response_after_client_hello"],
+                "unrecognized_tls_response_after_client_hello": verdicts["unrecognized_tls_response_after_client_hello"],
                 "post_handshake": verdicts["post_handshake_no_appdata"],
                 "early_drop": verdicts["dropped_early_after_appdata"],
                 "tls_frames_completed": sum(item.completed_tls_frames() for item in items),
@@ -1711,6 +1753,10 @@ def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     print("- held_live_by_current_proxy_usable: Java control-plane kept connected current-proxy status instead of showing newer sibling socket telemetry or local reconnect start.")
     print("- connected_without_socket_connected_marker: Telegram reached on_connected, but this log slice has no socket_connected marker; do not treat it as a TCP failure.")
     print("- client_hello_sent_no_server_hello: compare VPN vs non-VPN; with VPN failure points to server/client compatibility, without VPN it can be DPI blackhole.")
+    print("- tls_alert_after_client_hello: TCP and ClientHello completed; probable TLS alert / non-ServerHello record after ClientHello. Inspect mtproxy_tls_after_client_hello hex/record_len/alert fields before blaming the proxy.")
+    print("- short_tls_response_after_client_hello: bytes arrived after ClientHello, but not enough for a parseable ServerHello flight.")
+    print("- unrecognized_tls_response_after_client_hello: bytes arrived after ClientHello, but the FakeTLS parser did not recognize the server response.")
+    print("- unsupported_for_current_client: every allowed compatibility recipe failed; rotate/quarantine the exact endpoint recipe.")
     print("- server_hello_hmac_mismatch: likely ClientHello/profile/server response mismatch, not plain packet loss.")
     print("- mtproxy_packet_sent_no_response: plain dd TCP opened and the first MTProxy packet was sent, but no server reply arrived.")
     print("- handshake_ok_no_appdata_sent: HMAC passed and on_connected fired, but this socket closed before app-data was sent; usually idle/restart noise, not a proxy failure.")

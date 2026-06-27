@@ -155,6 +155,9 @@ private:
     void mtProxyEndpointStoreResolvedAddress(const std::string &host, const std::string &ip);
     void applyMtProxyPhaseAdaptiveRecipe();
     void rotateMtProxyTlsProfileOnFailureIfNeeded(int32_t reason, int32_t error);
+    void logMtProxyTlsAfterClientHello(size_t responseBytes);
+    const char *classifyMtProxyPostClientHelloResponse(size_t responseBytes);
+    void closeMtProxyPostClientHelloResponse(const char *diagnostic, const char *reason, int32_t error);
     void markProxyHandshakeClientHelloSent();
     void markProxyHandshakeFreezeIfNeeded();
     void markProxyServerHelloHmacTimeoutIfNeeded();

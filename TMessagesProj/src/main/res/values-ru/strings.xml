@@ -304,8 +304,14 @@
     <string name="ProxyStatusTcpNotConnected">TCP не открылся: сервер или порт недоступен</string>
     <string name="ProxyStatusTcpConnectedNoPong">TCP открылся, но MTProxy не ответил</string>
     <string name="ProxyStatusNetworkBlockSuspected">Похоже на сетевую блокировку до ответа MTProxy</string>
+    <string name="ProxyStatusSecretInvalidDomainControlChar">В секрете прокси есть недопустимый символ домена</string>
+    <string name="ProxyStatusSecretInvalidDomain">В секрете прокси указан недопустимый домен</string>
     <string name="ProxyStatusClientHelloNoServerHello">ClientHello отправлен, ServerHello не пришёл</string>
+    <string name="ProxyStatusTlsAlertAfterClientHello">Вероятный TLS alert после ClientHello</string>
+    <string name="ProxyStatusShortTlsResponseAfterClientHello">Сервер прислал короткий TLS-ответ после ClientHello</string>
+    <string name="ProxyStatusUnrecognizedTlsResponseAfterClientHello">Сервер прислал неподдерживаемый TLS-ответ после ClientHello</string>
     <string name="ProxyStatusServerHelloHmacMismatch">ServerHello не прошёл HMAC-проверку MTProxy</string>
+    <string name="ProxyStatusUnsupportedForCurrentClient">Прокси не поддерживается текущим набором совместимости MTProxy</string>
     <string name="ProxyStatusMtproxyPacketSentNoResponse">MTProxy-пакет отправлен, ответа сервера нет</string>
     <string name="ProxyStatusPostHandshakeNoAppData">Рукопожатие прошло, MTProto-данные не пришли</string>
     <string name="ProxyStatusDroppedEarlyAfterAppData">Подключился и быстро отвалился после первых данных</string>

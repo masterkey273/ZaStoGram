@@ -42,8 +42,7 @@ public final class ProxyPhasePolicy {
             case ProxyCheckDiagnostics.HOST_RESOLVE_FAILED:
             case ProxyCheckDiagnostics.HOST_RESOLVE_TIMEOUT:
             case ProxyCheckDiagnostics.TCP_CONNECTED_NO_PONG:
-            case ProxyCheckDiagnostics.CLIENT_HELLO_SENT_NO_SERVER_HELLO:
-            case ProxyCheckDiagnostics.SERVER_HELLO_HMAC_MISMATCH:
+            case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:
             case ProxyCheckDiagnostics.MTPROXY_PACKET_SENT_NO_RESPONSE:
             case ProxyCheckDiagnostics.POST_HANDSHAKE_NO_APPDATA:
             case ProxyCheckDiagnostics.DROPPED_EARLY_AFTER_APPDATA:
@@ -130,6 +129,10 @@ public final class ProxyPhasePolicy {
             case ProxyCheckDiagnostics.DNS_COALESCE_TIMEOUT:
                 return failure(KeyScope.NETWORK, false, false);
 
+            case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
+            case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN:
+                return failure(KeyScope.EXACT, false, false);
+
             case ProxyCheckDiagnostics.HOST_RESOLVE_FAILED:
             case ProxyCheckDiagnostics.HOST_RESOLVE_TIMEOUT:
             case ProxyCheckDiagnostics.TCP_NOT_CONNECTED:
@@ -140,7 +143,13 @@ public final class ProxyPhasePolicy {
                 return failure(KeyScope.NETWORK, true, true);
 
             case ProxyCheckDiagnostics.CLIENT_HELLO_SENT_NO_SERVER_HELLO:
+            case ProxyCheckDiagnostics.TLS_ALERT_AFTER_CLIENT_HELLO:
+            case ProxyCheckDiagnostics.SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO:
+            case ProxyCheckDiagnostics.UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case ProxyCheckDiagnostics.SERVER_HELLO_HMAC_MISMATCH:
+                return failure(KeyScope.EXACT, false, false);
+
+            case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:
             case ProxyCheckDiagnostics.POST_HANDSHAKE_NO_APPDATA:
             case ProxyCheckDiagnostics.CONNECTING_TIMEOUT:
                 return failure(KeyScope.EXACT, true, true);

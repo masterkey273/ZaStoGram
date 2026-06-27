@@ -2,6 +2,7 @@ package org.telegram.messenger;
 
 import android.util.Base64;
 
+import java.net.IDN;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
@@ -156,7 +157,50 @@ public final class ProxyEndpointKey {
         if (secret == null || secret.length <= 17 || (secret[0] & 0xff) != 0xee) {
             return "";
         }
-        return new String(secret, 17, secret.length - 17, StandardCharsets.UTF_8);
+        return sanitizeSecretDomainForLiveStage(new String(secret, 17, secret.length - 17, StandardCharsets.UTF_8));
+    }
+
+    static String sanitizeSecretDomainForLiveStage(String domain) {
+        if (domain == null || domain.length() == 0) {
+            return "";
+        }
+        StringBuilder stripped = new StringBuilder(domain.length());
+        for (int i = 0, count = domain.length(); i < count; i++) {
+            char c = domain.charAt(i);
+            if (!Character.isISOControl(c)) {
+                stripped.append(c);
+            }
+        }
+        String trimmed = stripped.toString().trim();
+        if (trimmed.length() == 0) {
+            return "";
+        }
+        try {
+            String ascii = IDN.toASCII(trimmed, IDN.USE_STD3_ASCII_RULES).toLowerCase(Locale.US);
+            return isValidAsciiHostname(ascii) ? ascii : "";
+        } catch (IllegalArgumentException e) {
+            return "";
+        }
+    }
+
+    private static boolean isValidAsciiHostname(String domain) {
+        if (domain == null || domain.length() == 0 || domain.length() > 253 || domain.startsWith(".") || domain.endsWith(".")) {
+            return false;
+        }
+        String[] labels = domain.split("\\.", -1);
+        for (String label : labels) {
+            if (label.length() == 0 || label.length() > 63 || label.startsWith("-") || label.endsWith("-")) {
+                return false;
+            }
+            for (int i = 0, count = label.length(); i < count; i++) {
+                char c = label.charAt(i);
+                boolean valid = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                if (!valid) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     static String normalizeKeyPart(String value, boolean lowerCase) {

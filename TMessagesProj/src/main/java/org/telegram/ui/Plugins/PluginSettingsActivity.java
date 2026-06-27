@@ -396,6 +396,7 @@ public class PluginSettingsActivity extends BaseFragment implements Notification
                 TextCell cell = (TextCell) holder.itemView;
                 cell.setTextAndIcon("Удалить плагин", R.drawable.msg_delete, false);
                 cell.setColors(Theme.key_text_RedRegular, Theme.key_text_RedRegular);
+                cell.setSubtitle(""); // clear any subtitle left over from a recycled TextCell
                 return;
             }
             if (position == deleteInfoRow) {
@@ -430,10 +431,7 @@ public class PluginSettingsActivity extends BaseFragment implements Notification
                     TextCell cell = (TextCell) holder.itemView;
                     cell.setColors(Theme.key_windowBackgroundWhiteGrayIcon, Theme.key_windowBackgroundWhiteBlackText);
                     cell.setTextAndValue(asStr(m.get("text")), asStr(m.get("value")), dividerBelow);
-                    String subtext = asStr(m.get("subtext"));
-                    if (!subtext.isEmpty()) {
-                        cell.setSubtitle(subtext);
-                    }
+                    cell.setSubtitle(asStr(m.get("subtext"))); // always set so a recycled cell can't keep a stale subtitle
                     break;
                 }
                 case "selector": {
@@ -444,6 +442,7 @@ public class PluginSettingsActivity extends BaseFragment implements Notification
                     String shown = options != null && value >= 0 && value < options.size()
                             ? String.valueOf(options.get(value)) : "";
                     cell.setTextAndValue(asStr(m.get("text")), shown, dividerBelow);
+                    cell.setSubtitle(asStr(m.get("subtext"))); // show subtext and clear on recycle
                     break;
                 }
                 default: { // "text"
@@ -457,10 +456,7 @@ public class PluginSettingsActivity extends BaseFragment implements Notification
                     } else {
                         cell.setText(asStr(m.get("text")), dividerBelow);
                     }
-                    String subtext = asStr(m.get("subtext"));
-                    if (!subtext.isEmpty()) {
-                        cell.setSubtitle(subtext);
-                    }
+                    cell.setSubtitle(asStr(m.get("subtext"))); // unconditional: avoid a stale subtitle on recycle
                     break;
                 }
             }

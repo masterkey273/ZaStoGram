@@ -90,18 +90,18 @@ MtProxyAdaptivePolicy::RecipeResult MtProxyAdaptivePolicy::applyRecipe(const Rec
         }
         return result;
     }
-    if (input.recipeLevel >= 1 && result.clientHelloFragmentation == MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF) {
-        result.clientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT;
+    if (input.recipeLevel >= 1 && result.clientHelloFragmentation != MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF) {
+        result.clientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF;
         result.changed = true;
     }
     if (input.recipeLevel >= 2) {
         int32_t previousProfile = result.effectiveTlsProfile;
-        result.effectiveTlsProfile = adaptiveTlsProfile(input.configuredTlsProfile, result.effectiveTlsProfile);
+        result.effectiveTlsProfile = compatibilityTlsProfile(input.configuredTlsProfile, result.effectiveTlsProfile, input.recipeLevel);
         if (result.effectiveTlsProfile != previousProfile) {
             result.changed = true;
         }
     }
-    if (input.recipeLevel >= 3 && result.connectionPatternMode != MT_PROXY_CONNECTION_PATTERN_STRICT) {
+    if (input.recipeLevel >= 4 && result.connectionPatternMode != MT_PROXY_CONNECTION_PATTERN_STRICT) {
         if (result.connectionPatternMode == MT_PROXY_CONNECTION_PATTERN_OFF
                 || result.connectionPatternMode == MT_PROXY_CONNECTION_PATTERN_SOFT
                 || result.connectionPatternMode == MT_PROXY_CONNECTION_PATTERN_BROWSER) {
@@ -156,8 +156,32 @@ bool MtProxyAdaptivePolicy::failureNeedsRecipe(const std::string &diagnostic) {
         return false; // ClientHello was not sent, so JA4 did not cause this failure.
     }
     return diagnostic == "client_hello_sent_no_server_hello"
+           || diagnostic == "tls_alert_after_client_hello"
+           || diagnostic == "short_tls_response_after_client_hello"
+           || diagnostic == "unrecognized_tls_response_after_client_hello"
            || diagnostic == "server_hello_hmac_mismatch"
            || diagnostic == "post_handshake_no_appdata";
+}
+
+int32_t MtProxyAdaptivePolicy::compatibilityTlsProfile(int32_t configuredProfile, int32_t effectiveProfile, int32_t recipeLevel) {
+    (void) configuredProfile;
+    effectiveProfile = normalizeMtProxyTlsProfileOption(effectiveProfile);
+    if (recipeLevel <= 1) {
+        return effectiveProfile;
+    }
+    if (recipeLevel == 2) {
+        return effectiveProfile == MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID
+                ? MT_PROXY_TLS_PROFILE_ANDROID_CHROME
+                : MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID;
+    }
+    if (recipeLevel == 3) {
+        return effectiveProfile == MT_PROXY_TLS_PROFILE_ANDROID_CHROME
+                ? MT_PROXY_TLS_PROFILE_YANDEX
+                : MT_PROXY_TLS_PROFILE_ANDROID_CHROME;
+    }
+    return effectiveProfile == MT_PROXY_TLS_PROFILE_YANDEX
+            ? MT_PROXY_TLS_PROFILE_FIREFOX
+            : MT_PROXY_TLS_PROFILE_YANDEX;
 }
 
 int32_t MtProxyAdaptivePolicy::adaptiveTlsProfile(int32_t configuredProfile, int32_t effectiveProfile) {

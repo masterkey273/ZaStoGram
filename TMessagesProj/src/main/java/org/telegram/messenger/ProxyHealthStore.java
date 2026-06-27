@@ -9,6 +9,8 @@ final class ProxyHealthStore {
     private static final long PROXY_CHECK_FAILURE_BACKOFF_MAX_MS = 8 * 60 * 1000L;
     private static final long PROXY_CHECK_LIVE_FAILURE_DEDUP_MS = 1500L;
     private static final long PROXY_CHECK_CONNECTED_GRACE_MS = 60 * 1000L;
+    private static final long UNSUPPORTED_CLIENT_FAILURE_BACKOFF_MS = 15 * 60 * 1000L;
+    private static final long UNSUPPORTED_CLIENT_ROTATED_AWAY_HOLD_MS = 15 * 60 * 1000L;
     private static final long USABLE_SUCCESS_HOLD_MS = 45 * 1000L;
     private static final long ROTATED_AWAY_HOLD_MS = 45 * 1000L;
     private static final long PUNITIVE_FAILURE_WINDOW_MS = 30 * 1000L;
@@ -108,24 +110,30 @@ final class ProxyHealthStore {
         state.usableSuccessUntil = 0;
         state.lastDiagnostic = normalized;
         state.lastCheckTime = now;
-        state.rotatedAwayUntil = now + ROTATED_AWAY_HOLD_MS;
+        long rotatedAwayHoldMs = rotatedAwayHoldMs(normalized);
+        state.rotatedAwayUntil = now + rotatedAwayHoldMs;
         if (state.consecutiveFailures <= 0) {
             state.consecutiveFailures = 1;
         }
-        long quarantineUntil = now + PROXY_CHECK_FAILURE_BACKOFF_MS;
+        long quarantineUntil = now + failureBackoffMs(normalized, state.consecutiveFailures);
         if (state.nextCheckTime < quarantineUntil) {
             state.nextCheckTime = quarantineUntil;
         }
-        logControl("decision=quarantine_exact endpoint=" + ProxyEndpointKey.endpoint(proxyInfo) + " phase=" + normalized + " hold_ms=" + ROTATED_AWAY_HOLD_MS);
+        logControl("decision=quarantine_exact endpoint=" + ProxyEndpointKey.endpoint(proxyInfo) + " phase=" + normalized + " hold_ms=" + rotatedAwayHoldMs);
     }
 
     static void ignoreEndpointTelemetry(String endpointKey, long now) {
+        ignoreEndpointTelemetry(endpointKey, now, ProxyCheckDiagnostics.UNKNOWN_FAIL);
+    }
+
+    static void ignoreEndpointTelemetry(String endpointKey, long now, String phase) {
         if (endpointKey == null || endpointKey.length() == 0) {
             return;
         }
+        long rotatedAwayHoldMs = rotatedAwayHoldMs(ProxyCheckDiagnostics.normalize(phase));
         pruneEndpointTelemetryIgnores(now);
-        endpointTelemetryIgnoreUntil.put(endpointKey, now + ROTATED_AWAY_HOLD_MS);
-        logControl("decision=rotated_away_ignore endpoint=" + endpointKey + " hold_ms=" + ROTATED_AWAY_HOLD_MS);
+        endpointTelemetryIgnoreUntil.put(endpointKey, now + rotatedAwayHoldMs);
+        logControl("decision=rotated_away_ignore endpoint=" + endpointKey + " phase=" + ProxyCheckDiagnostics.normalize(phase) + " hold_ms=" + rotatedAwayHoldMs);
     }
 
     static boolean shouldIgnoreEndpointTelemetry(String endpointKey, long now) {
@@ -265,8 +273,7 @@ final class ProxyHealthStore {
             state.rotationFailureWindowStartTime = 0;
             state.rotationFailures = 0;
         }
-        long multiplier = 1L << Math.min(2, Math.max(0, state.consecutiveFailures - 1));
-        long backoff = Math.min(PROXY_CHECK_FAILURE_BACKOFF_MAX_MS, PROXY_CHECK_FAILURE_BACKOFF_MS * multiplier);
+        long backoff = failureBackoffMs(state.lastDiagnostic, state.consecutiveFailures);
         state.nextCheckTime = now + backoff;
         boolean rotationAllowed = ProxyPhasePolicy.canRotate(state.lastDiagnostic) && state.rotationFailures >= PUNITIVE_FAILURES_TO_ROTATE;
         if (rotationAllowed) {
@@ -274,6 +281,21 @@ final class ProxyHealthStore {
         }
         logControl("decision=backoff endpoint=" + ProxyEndpointKey.endpoint(proxyInfo) + " wait_ms=" + backoff + " failures=" + state.consecutiveFailures + " rotation_failures=" + state.rotationFailures + " rotation_allowed=" + rotationAllowed + " phase=" + state.lastDiagnostic + " source=" + source);
         return new EndpointFailureResult(state.lastDiagnostic, state.consecutiveFailures, state.rotationFailures, rotationAllowed, true);
+    }
+
+    private static long failureBackoffMs(String diagnostic, int consecutiveFailures) {
+        if (ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT.equals(ProxyCheckDiagnostics.normalize(diagnostic))) {
+            return UNSUPPORTED_CLIENT_FAILURE_BACKOFF_MS;
+        }
+        long multiplier = 1L << Math.min(2, Math.max(0, consecutiveFailures - 1));
+        return Math.min(PROXY_CHECK_FAILURE_BACKOFF_MAX_MS, PROXY_CHECK_FAILURE_BACKOFF_MS * multiplier);
+    }
+
+    private static long rotatedAwayHoldMs(String diagnostic) {
+        if (ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT.equals(ProxyCheckDiagnostics.normalize(diagnostic))) {
+            return UNSUPPORTED_CLIENT_ROTATED_AWAY_HOLD_MS;
+        }
+        return ROTATED_AWAY_HOLD_MS;
     }
 
     static int punitiveFailuresToRotate() {

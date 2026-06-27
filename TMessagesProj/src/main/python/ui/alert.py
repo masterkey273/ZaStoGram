@@ -30,6 +30,7 @@ class AlertDialogBuilder:
             context = get_context()
         self._builder = AlertDialog.Builder(context)
         self._dialog = None
+        self._cancelable = None
 
     def set_title(self, title):
         self._builder.setTitle(title)
@@ -59,18 +60,26 @@ class AlertDialogBuilder:
         return self
 
     def set_cancelable(self, value):
-        try:
-            self._builder.setCancelable(bool(value))
-        except Exception:
-            pass
+        # AlertDialog.Builder has no setCancelable(); the flag is applied to the dialog itself.
+        self._cancelable = bool(value)
         return self
+
+    def _apply_cancelable(self):
+        if self._dialog is not None and self._cancelable is not None:
+            try:
+                self._dialog.setCancelable(self._cancelable)
+                self._dialog.setCanceledOnTouchOutside(self._cancelable)
+            except Exception:
+                pass
 
     def create(self):
         self._dialog = self._builder.create()
+        self._apply_cancelable()
         return self._dialog
 
     def show(self):
         self._dialog = self._builder.show()
+        self._apply_cancelable()
         return self._dialog
 
     def dismiss(self):

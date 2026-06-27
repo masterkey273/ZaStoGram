@@ -63,6 +63,8 @@ def native_diagnostics(socket: str, socket_h: str, startup_timeline: str) -> set
     phases = set(re.findall(r'publishProxyConnectionStage\("([a-z0-9_]+)"\)', native_source))
     phases |= set(re.findall(r'proxyCheckDiagnostic\s*=\s*"([a-z0-9_]+)"', native_source))
     phases |= set(re.findall(r'return "([a-z0-9_]+)"', startup_timeline))
+    phases |= set(re.findall(r'closeMtProxyPostClientHelloResponse\("([a-z0-9_]+)"', socket))
+    phases |= set(re.findall(r'if \(responseBytes [^}]+return "([a-z0-9_]+)"', socket))
     phases |= set(re.findall(r'proxyCheckDiagnostic\s*=\s*"([a-z0-9_]+)"', socket_h))
     phases.discard("wss_tls_handshake")
     phases -= {

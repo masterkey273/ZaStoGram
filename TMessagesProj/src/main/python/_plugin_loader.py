@@ -33,13 +33,19 @@ def instantiate(path, plugin_id, context):
     code = compile(src, str(path), "exec")
     exec(code, g)
 
-    plugin_cls = None
-    for value in list(g.values()):
-        if isinstance(value, type) and issubclass(value, BasePlugin) and value is not BasePlugin:
-            plugin_cls = value
-            break
-    if plugin_cls is None:
+    candidates = [v for v in g.values()
+                  if isinstance(v, type) and issubclass(v, BasePlugin) and v is not BasePlugin]
+    if not candidates:
         raise RuntimeError("no BasePlugin subclass found in " + str(path))
+    # Pick the most-derived class: drop any candidate that is a base of another candidate
+    # (so an intermediate base/mixin defined before the real plugin is not chosen).
+    leaves = [c for c in candidates
+              if not any(c is not d and issubclass(d, c) for d in candidates)]
+    pool = leaves or candidates
+    # Prefer a class defined in THIS plugin file over an imported helper base.
+    own = [c for c in pool if getattr(c, "__module__", None) == g.get("__name__")]
+    pool = own or pool
+    plugin_cls = pool[-1]  # last defined wins
 
     inst = plugin_cls()
     inst._context = context
@@ -95,6 +101,8 @@ def get_settings_model(plugin_id):
         except Exception:
             traceback.print_exc()
             continue
+        if not isinstance(model, dict):
+            continue  # skip a malformed row instead of blanking the whole screen
         row = HashMap()
         for key, value in model.items():
             row.put(key, value)
@@ -141,8 +149,7 @@ def has_request_hooks():
             return True
         if type(inst).post_request_hook is not BasePlugin.post_request_hook:
             return True
-        if type(inst).pre_request_hook is not BasePlugin.pre_request_hook:
-            return True
+        # pre_request_hook is not dispatched yet, so overriding it must NOT arm the interceptor.
     return False
 
 

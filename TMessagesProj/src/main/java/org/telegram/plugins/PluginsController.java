@@ -245,11 +245,9 @@ public class PluginsController {
                 return null;
             }
             File dest = new File(pluginsDir(), meta.id + ".plugin");
-            // Replacing an existing plugin: unload the old instance first.
+            // Replacing an existing plugin: the old instance is unloaded on the queue below
+            // (off-queue unload would race the non-thread-safe contexts map).
             PluginInfo existing = findById(meta.id);
-            if (existing != null) {
-                unloadPluginInternal(existing);
-            }
             if (dest.exists()) {
                 //noinspection ResultOfMethodCallIgnored
                 dest.delete();
@@ -266,9 +264,13 @@ public class PluginsController {
                 plugins.add(meta);
             }
             persistIndex();
+            final PluginInfo toUnload = existing;
             final PluginInfo toLoad = meta;
             queue.postRunnable(() -> {
                 ensurePythonStarted();
+                if (toUnload != null) {
+                    unloadPluginInternal(toUnload); // unload OLD on the queue thread, never off it
+                }
                 if (isCompatible(toLoad)) {
                     loadPluginInternal(toLoad);
                 }
@@ -354,10 +356,12 @@ public class PluginsController {
             info.loaded = true;
             info.error = null;
         } catch (PyException e) {
+            ctx.unhookAll(); // roll back hooks installed before on_plugin_load() threw
             info.loaded = false;
             info.error = shortError(e);
             FileLog.e("zasto plugin '" + info.id + "' failed to load", e);
         } catch (Throwable t) {
+            ctx.unhookAll();
             info.loaded = false;
             info.error = shortError(t);
             FileLog.e(t);
@@ -452,11 +456,11 @@ public class PluginsController {
         try {
             PyObject out = loader.callAttr("dispatch_post_request", requestName, account, response, error);
             if (out == null) {
-                return null; // CANCEL
+                return response; // Python None = no change; deliver the original (may be null on error)
             }
             Object java = out.toJava(Object.class);
             if (PluginRequestInterceptor.CANCEL_SENTINEL.equals(java)) {
-                return null;
+                return PluginRequestInterceptor.CANCEL_SENTINEL; // explicit, non-null CANCEL marker
             }
             return java;
         } catch (Throwable t) {
@@ -471,7 +475,7 @@ public class PluginsController {
         }
         try {
             PyObject b = loader.callAttr("has_request_hooks");
-            return b != null && b.toBoolean();
+            return b != null && b.toJava(Boolean.class);
         } catch (Throwable t) {
             return false;
         }
