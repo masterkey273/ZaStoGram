@@ -47,11 +47,13 @@ public class ProxyCheckDiagnostics {
     public static final String NETWORK_BLOCK_SUSPECTED = "network_block_suspected";
     public static final String SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR = "secret_parse_invalid_domain_control_char";
     public static final String SECRET_PARSE_INVALID_DOMAIN = "secret_parse_invalid_domain";
+    public static final String TRUE_CLIENT_HELLO_TIMEOUT = "true_client_hello_timeout";
     public static final String CLIENT_HELLO_SENT_NO_SERVER_HELLO = "client_hello_sent_no_server_hello";
     public static final String TLS_ALERT_AFTER_CLIENT_HELLO = "tls_alert_after_client_hello";
     public static final String SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO = "short_tls_response_after_client_hello";
     public static final String UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO = "unrecognized_tls_response_after_client_hello";
     public static final String SERVER_HELLO_HMAC_MISMATCH = "server_hello_hmac_mismatch";
+    public static final String BACKGROUND_HANDSHAKE_ABORTED = "background_handshake_aborted";
     public static final String UNSUPPORTED_FOR_CURRENT_CLIENT = "unsupported_for_current_client";
     public static final String MTPROXY_PACKET_SENT_NO_RESPONSE = "mtproxy_packet_sent_no_response";
     public static final String POST_HANDSHAKE_NO_APPDATA = "post_handshake_no_appdata";
@@ -101,11 +103,13 @@ public class ProxyCheckDiagnostics {
             case NETWORK_BLOCK_SUSPECTED:
             case SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
             case SECRET_PARSE_INVALID_DOMAIN:
+            case TRUE_CLIENT_HELLO_TIMEOUT:
             case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
             case TLS_ALERT_AFTER_CLIENT_HELLO:
             case SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case SERVER_HELLO_HMAC_MISMATCH:
+            case BACKGROUND_HANDSHAKE_ABORTED:
             case UNSUPPORTED_FOR_CURRENT_CLIENT:
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
             case POST_HANDSHAKE_NO_APPDATA:
@@ -368,6 +372,7 @@ public class ProxyCheckDiagnostics {
                 return title("ProxyStatusSecretInvalidDomainControlChar", R.string.ProxyStatusSecretInvalidDomainControlChar);
             case SECRET_PARSE_INVALID_DOMAIN:
                 return title("ProxyStatusSecretInvalidDomain", R.string.ProxyStatusSecretInvalidDomain);
+            case TRUE_CLIENT_HELLO_TIMEOUT:
             case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
                 return title("ProxyStatusClientHelloNoServerHello", R.string.ProxyStatusClientHelloNoServerHello);
             case TLS_ALERT_AFTER_CLIENT_HELLO:
@@ -501,6 +506,7 @@ public class ProxyCheckDiagnostics {
                 return LocaleController.getString(R.string.ProxyStatusSecretInvalidDomainControlChar);
             case SECRET_PARSE_INVALID_DOMAIN:
                 return LocaleController.getString(R.string.ProxyStatusSecretInvalidDomain);
+            case TRUE_CLIENT_HELLO_TIMEOUT:
             case CLIENT_HELLO_SENT_NO_SERVER_HELLO:
                 return LocaleController.getString(R.string.ProxyStatusClientHelloNoServerHello);
             case TLS_ALERT_AFTER_CLIENT_HELLO:

@@ -394,15 +394,16 @@ def main():
         "TCP connect gate release must release the same host/port network key it acquired",
     )
     dns_cache_start = socket.find("bool ConnectionSocket::mtProxyEndpointUseCachedHostAddress")
-    dns_cache_end = socket.find("void ConnectionSocket::applyMtProxyPhaseAdaptiveRecipe", dns_cache_start)
+    dns_cache_end = socket.find("std::string ConnectionSocket::currentMtProxyRecipeId", dns_cache_start)
     dns_cache_body = socket[dns_cache_start:dns_cache_end]
     require(
         "currentMtProxyDnsCacheKey" in dns_cache_body
         and "MtProxyEndpointPolicy::useCachedHostAddress" in dns_cache_body
         and "MtProxyEndpointPolicy::storeResolvedAddress" in dns_cache_body
         and "currentMtProxyEndpointKey" not in dns_cache_body
+        and "currentMtProxyRecipeCacheKey" not in dns_cache_body
         and "proxyEndpointResilience" not in dns_cache_body,
-        "DNS cache use/store path must not depend on the per-secret/SNI resilience endpoint key",
+        "DNS cache use/store path must not depend on the per-secret/SNI endpoint or recipe key",
     )
     request_start = socket.find("void ConnectionSocket::requestPendingHostResolve")
     request_end = socket.find("void ConnectionSocket::onHostNameResolved", request_start)
@@ -480,12 +481,12 @@ def main():
     )
     require(
         "proxyEndpointResilience[result.stateKey]" in endpoint_policy
-        and "proxyEndpointResilience[context.endpointKey]" in endpoint_policy,
+        and "proxyEndpointResilience[recipeKey]" in endpoint_policy,
         "failure cooldown and FakeTLS recipe must use separate state entries when the phase requires it",
     )
     require(
         "context.fakeTls = currentSecretIsFakeTls" in failure_body
-        and "context.fakeTls && failureNeedsRecipe(phase)" in endpoint_policy,
+        and "context.fakeTls && needsRecipe" in endpoint_policy,
         "recipe level must only advance for FakeTLS connections, never for dd/legacy MTProxy",
     )
     success_start = socket.find("void ConnectionSocket::recordMtProxyEndpointDataPathSuccess")

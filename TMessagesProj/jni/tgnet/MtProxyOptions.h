@@ -16,6 +16,10 @@ static constexpr int32_t MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID = 4;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_ANDROID_OKHTTP = 5;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_AUTO_ROTATE = 6;
 static constexpr int32_t MT_PROXY_TLS_PROFILE_CHROME_MODERN = 7;
+static constexpr int32_t MT_PROXY_TLS_PROFILE_LEGACY_NO_GREASE = 8;
+
+static constexpr int32_t MT_PROXY_SERVER_HELLO_PARSER_STANDARD = 0;
+static constexpr int32_t MT_PROXY_SERVER_HELLO_PARSER_LENIENT = 1;
 
 static constexpr int32_t MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF = 0;
 static constexpr int32_t MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT = 1;
@@ -60,10 +64,17 @@ static inline int32_t normalizeMtProxyTlsProfileOption(int32_t value) {
     if (value == MT_PROXY_TLS_PROFILE_AUTO || value == MT_PROXY_TLS_PROFILE_AUTO_ROTATE) {
         return value;
     }
-    if (value >= MT_PROXY_TLS_PROFILE_FIREFOX && value <= MT_PROXY_TLS_PROFILE_CHROME_MODERN) {
+    if (value >= MT_PROXY_TLS_PROFILE_FIREFOX && value <= MT_PROXY_TLS_PROFILE_LEGACY_NO_GREASE) {
         return value;
     }
     return MT_PROXY_TLS_PROFILE_ANDROID_CHROME;
+}
+
+static inline int32_t normalizeMtProxyServerHelloParserOption(int32_t value) {
+    if (value >= MT_PROXY_SERVER_HELLO_PARSER_STANDARD && value <= MT_PROXY_SERVER_HELLO_PARSER_LENIENT) {
+        return value;
+    }
+    return MT_PROXY_SERVER_HELLO_PARSER_STANDARD;
 }
 
 static inline int32_t normalizeMtProxyClientHelloFragmentationOption(int32_t value) {

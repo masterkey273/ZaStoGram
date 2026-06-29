@@ -140,6 +140,9 @@ def run_runtime_log_visible_hold_check(failures: list[str]) -> None:
         good = session / "good_markers.txt"
         bad_connect_start = session / "bad_connect_start_markers.txt"
         good_connect_start = session / "good_connect_start_markers.txt"
+        bad_failure_overwrite = session / "bad_failure_overwrite_markers.txt"
+        good_failure_shadow = session / "good_failure_shadow_markers.txt"
+        bad_failure_anchor = session / "bad_failure_anchor_markers.txt"
         bad.write_text(
             runtime_log_lines(
                 "logcat.txt:7: 06-25 20:31:31.110 proxy_control decision=visible_only source=native_stage account=0 phase=tcp_connect_gate endpoint=sberbank.dns.army:45631"
@@ -161,6 +164,24 @@ def run_runtime_log_visible_hold_check(failures: list[str]) -> None:
         good_connect_start.write_text(
             runtime_log_lines(
                 "logcat.txt:7: 06-25 20:31:31.110 proxy_control decision=held_live_by_usable_success source=connect_start phase=connect_start endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army held_by=first_tls_app_recv"
+            ),
+            encoding="utf-8",
+        )
+        bad_failure_overwrite.write_text(
+            runtime_log_lines(
+                "logcat.txt:7: 06-25 20:31:31.110 proxy_control decision=visible_only source=native_stage account=0 phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army"
+            ),
+            encoding="utf-8",
+        )
+        good_failure_shadow.write_text(
+            runtime_log_lines(
+                "logcat.txt:7: 06-25 20:31:31.110 proxy_control decision=shadowed_by_usable_success source=native_stage account=0 phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army held_by=first_tls_app_recv"
+            ),
+            encoding="utf-8",
+        )
+        bad_failure_anchor.write_text(
+            runtime_log_lines(
+                "logcat.txt:7: 06-25 20:31:31.110 proxy_control decision=held_by_usable_success source=native_stage account=0 phase=client_hello_sent_no_server_hello endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army held_by=client_hello_sent_no_server_hello"
             ),
             encoding="utf-8",
         )
@@ -218,6 +239,47 @@ def run_runtime_log_visible_hold_check(failures: list[str]) -> None:
             good_connect_start_result.stderr.strip() or "runtime log verifier must allow held_live_by_usable_success for Java connect_start after visible usable success",
             failures,
         )
+        bad_failure_result = subprocess.run(
+            [sys.executable, str(RUNTIME_LOG_VERIFIER), str(bad_failure_overwrite)],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            bad_failure_result.returncode != 0
+            and "visible usable success overwritten by failure visible_only" in bad_failure_result.stderr,
+            "runtime log verifier must fail when a fresh usable success is overwritten by a failure visible_only phase within 45s",
+            failures,
+        )
+        good_failure_result = subprocess.run(
+            [sys.executable, str(RUNTIME_LOG_VERIFIER), str(good_failure_shadow)],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            good_failure_result.returncode == 0,
+            good_failure_result.stderr.strip() or "runtime log verifier must allow shadowed_by_usable_success for post-success handshake failures",
+            failures,
+        )
+        bad_anchor_result = subprocess.run(
+            [sys.executable, str(RUNTIME_LOG_VERIFIER), str(bad_failure_anchor)],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            bad_anchor_result.returncode != 0
+            and "fresh usable hold anchored to failure phase" in bad_anchor_result.stderr,
+            "runtime log verifier must fail when held_by is a failure diagnostic instead of a usable phase",
+            failures,
+        )
 
 
 def main() -> int:
@@ -259,6 +321,27 @@ def main() -> int:
         and live_hold_idx < visible_write_idx
         and 'return new Decision("held_live_by_usable_success"' in native_stage,
         "fresh usable success must hold later live pre-TCP native stages before they can overwrite visible state",
+        failures,
+    )
+    shadow_failure_idx = native_stage.find("shouldShadowFailureByUsableSuccess(currentProxy, event)")
+    shadow_decision_idx = native_stage.find("decision=shadowed_by_usable_success")
+    require(
+        "private static boolean shouldShadowFailureByUsableSuccess" in store
+        and shadow_failure_idx >= 0
+        and shadow_decision_idx >= 0
+        and visible_write_idx >= 0
+        and shadow_failure_idx < visible_write_idx
+        and shadow_decision_idx < visible_write_idx
+        and 'return new Decision("shadowed_by_usable_success"' in native_stage,
+        "fresh usable success must shadow later failure phases before any visible write",
+        failures,
+    )
+    require(
+        "static String lastUsablePhase" in health
+        and "ProxyPhasePolicy.isProxyUsableSuccessPhase" in health
+        and "ProxyHealthStore.lastUsablePhase" in store
+        and "private static String heldByUsablePhase" in store,
+        "usable-success holds must anchor held_by to ProxyHealthStore.lastUsablePhase instead of the mutable visible diagnostic",
         failures,
     )
     phase_policy = read(MESSENGER / "ProxyPhasePolicy.java")

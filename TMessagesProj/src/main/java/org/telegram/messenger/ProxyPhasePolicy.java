@@ -142,11 +142,13 @@ public final class ProxyPhasePolicy {
             case ProxyCheckDiagnostics.DROPPED_EARLY_AFTER_APPDATA:
                 return failure(KeyScope.NETWORK, true, true);
 
+            case ProxyCheckDiagnostics.TRUE_CLIENT_HELLO_TIMEOUT:
             case ProxyCheckDiagnostics.CLIENT_HELLO_SENT_NO_SERVER_HELLO:
             case ProxyCheckDiagnostics.TLS_ALERT_AFTER_CLIENT_HELLO:
             case ProxyCheckDiagnostics.SHORT_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case ProxyCheckDiagnostics.UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case ProxyCheckDiagnostics.SERVER_HELLO_HMAC_MISMATCH:
+            case ProxyCheckDiagnostics.BACKGROUND_HANDSHAKE_ABORTED:
                 return failure(KeyScope.EXACT, false, false);
 
             case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:

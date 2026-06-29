@@ -46,6 +46,32 @@ LIVE_VISIBLE_OVERWRITE_PHASES = {
     "endpoint_cooldown",
     "host_resolve_start",
 }
+FRESH_USABLE_FAILURE_OVERWRITE_PHASES = {
+    "tcp_not_connected",
+    "host_resolve_failed",
+    "host_resolve_timeout",
+    "tcp_connected_no_pong",
+    "network_block_suspected",
+    "client_hello_sent_no_server_hello",
+    "tls_alert_after_client_hello",
+    "short_tls_response_after_client_hello",
+    "unrecognized_tls_response_after_client_hello",
+    "server_hello_hmac_mismatch",
+    "background_handshake_aborted",
+    "unsupported_for_current_client",
+    "mtproxy_packet_sent_no_response",
+    "post_handshake_no_appdata",
+    "dropped_early_after_appdata",
+    "dropped_after_appdata",
+    "connecting_timeout",
+}
+USABLE_HOLD_DECISIONS = {
+    "held_live_by_usable_success",
+    "held_live_by_current_proxy_usable",
+    "held_by_usable_success",
+    "held_by_current_proxy_usable",
+    "shadowed_by_usable_success",
+}
 PUNITIVE_ROTATION_PHASES = {
     "tcp_not_connected",
     "host_resolve_failed",
@@ -140,7 +166,7 @@ def verify_visible_success_hold(lines: list[str]) -> list[str]:
         if decision == "visible_usable_success" and phase in USABLE_SUCCESS_PROXY_PHASES:
             usable_successes.append((line_time_ms(line), endpoint, line))
             continue
-        if decision != "visible_only" or phase not in LIVE_VISIBLE_OVERWRITE_PHASES:
+        if decision != "visible_only" or phase not in LIVE_VISIBLE_OVERWRITE_PHASES | FRESH_USABLE_FAILURE_OVERWRITE_PHASES:
             continue
         current_time = line_time_ms(line)
         for success_time, success_endpoint, success_line in usable_successes:
@@ -148,11 +174,30 @@ def verify_visible_success_hold(lines: list[str]) -> list[str]:
                 continue
             if success_time is not None and current_time is not None and current_time - success_time > VISIBLE_SUCCESS_HOLD_MS:
                 continue
+            if phase in FRESH_USABLE_FAILURE_OVERWRITE_PHASES:
+                failures.append(
+                    "visible usable success overwritten by failure visible_only within 45s: "
+                    f"{line} after {success_line}"
+                )
+                break
             failures.append(
                 "visible usable success overwritten by live visible_only within 45s: "
                 f"{line} after {success_line}"
             )
             break
+    return failures
+
+
+def verify_usable_hold_anchor(lines: list[str]) -> list[str]:
+    failures: list[str] = []
+    for line in lines:
+        decision = proxy_control_decision(line)
+        if decision not in USABLE_HOLD_DECISIONS:
+            continue
+        held_by = line_field(line, "held_by")
+        if held_by not in FRESH_USABLE_FAILURE_OVERWRITE_PHASES:
+            continue
+        failures.append(f"fresh usable hold anchored to failure phase: {line}")
     return failures
 
 
@@ -460,6 +505,7 @@ def verify_lines(lines: list[str]) -> list[str]:
             failures.append(f"mtproxy_disconnect missing invariant fields {','.join(missing)}: {line}")
 
     failures.extend(verify_visible_success_hold(lines))
+    failures.extend(verify_usable_hold_anchor(lines))
     failures.extend(verify_dns_visible_debounce(lines))
     failures.extend(verify_rotation_hysteresis(lines))
     failures.extend(verify_dns_outage_rotation_hold(lines))

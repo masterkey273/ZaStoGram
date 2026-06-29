@@ -50,26 +50,31 @@ public final class ProxyRuntimeStateStore {
             return new Decision("visible_usable_success", event.phase, event.endpointKey, false, true, false);
         }
         if (shouldHoldLivePhaseByUsableSuccess(currentProxy, event)) {
-            String heldBy = ProxyStatusMirror.diagnostic(currentProxy);
+            String heldBy = heldByUsablePhase(currentProxy, event.timestamp);
             logControl("decision=held_live_by_usable_success source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);
             return new Decision("held_live_by_usable_success", event.phase, event.endpointKey, false, false, true);
+        }
+        if (shouldShadowFailureByUsableSuccess(currentProxy, event)) {
+            String heldBy = heldByUsablePhase(currentProxy, event.timestamp);
+            logControl("decision=shadowed_by_usable_success source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);
+            return new Decision("shadowed_by_usable_success", event.phase, event.endpointKey, false, false, true);
         }
         boolean freshUsableSuccess = ProxyHealthStore.hasFreshUsableSuccess(currentProxy, event.timestamp);
         if (!freshUsableSuccess
                 && isCurrentProxyUsable(currentProxy, event.timestamp)
                 && ProxyPhasePolicy.isLivePhase(event.phase)
                 && !ProxyPhasePolicy.isProxyUsableSuccessPhase(event.phase)) {
-            String heldBy = ProxyStatusMirror.diagnostic(currentProxy);
+            String heldBy = heldByCurrentProxyPhase(currentProxy, event.timestamp);
             logControl("decision=held_live_by_current_proxy_usable source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);
             return new Decision("held_live_by_current_proxy_usable", event.phase, event.endpointKey, false, false, true);
         }
         if (ProxyPhasePolicy.canBackoff(event.phase) && freshUsableSuccess) {
-            String heldBy = ProxyStatusMirror.diagnostic(currentProxy);
+            String heldBy = heldByUsablePhase(currentProxy, event.timestamp);
             logControl("decision=held_by_usable_success source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);
             return new Decision("held_by_usable_success", event.phase, event.endpointKey, false, false, true);
         }
         if (ProxyPhasePolicy.canBackoff(event.phase) && isCurrentProxyUsable(currentProxy, event.timestamp)) {
-            String heldBy = ProxyStatusMirror.diagnostic(currentProxy);
+            String heldBy = heldByCurrentProxyPhase(currentProxy, event.timestamp);
             logControl("decision=held_by_current_proxy_usable source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " held_by=" + heldBy);
             return new Decision("held_by_current_proxy_usable", event.phase, event.endpointKey, false, false, true);
         }
@@ -83,6 +88,11 @@ public final class ProxyRuntimeStateStore {
                 scheduleDnsVisiblePhase(currentProxy, event);
             }
             logControl("decision=telemetry_only source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey + " delay_ms=" + DNS_VISIBLE_DELAY_MS);
+            return new Decision("telemetry_only", event.phase, event.endpointKey, false, false, false);
+        }
+
+        if (shouldKeepLifecycleFailureTelemetryOnly(event.phase)) {
+            logControl("decision=telemetry_only source=" + event.source + " account=" + event.account + " phase=" + event.phase + " endpoint=" + event.endpointKey);
             return new Decision("telemetry_only", event.phase, event.endpointKey, false, false, false);
         }
 
@@ -136,6 +146,39 @@ public final class ProxyRuntimeStateStore {
         return true;
     }
 
+    private static boolean shouldShadowFailureByUsableSuccess(SharedConfig.ProxyInfo proxyInfo, ProxyConnectionEvent event) {
+        if (proxyInfo == null || event == null) {
+            return false;
+        }
+        String phase = ProxyCheckDiagnostics.normalize(event.phase);
+        return ProxyPhasePolicy.isFailure(phase)
+                && ProxyHealthStore.hasFreshUsableSuccess(proxyInfo, event.timestamp);
+    }
+
+    private static String heldByUsablePhase(SharedConfig.ProxyInfo proxyInfo, long now) {
+        String heldBy = ProxyHealthStore.lastUsablePhase(proxyInfo, now);
+        if (ProxyPhasePolicy.isProxyUsableSuccessPhase(heldBy)) {
+            return heldBy;
+        }
+        heldBy = ProxyStatusMirror.diagnostic(proxyInfo);
+        if (ProxyPhasePolicy.isProxyUsableSuccessPhase(heldBy)) {
+            return heldBy;
+        }
+        return ProxyCheckDiagnostics.FIRST_TLS_APP_RECV;
+    }
+
+    private static String heldByCurrentProxyPhase(SharedConfig.ProxyInfo proxyInfo, long now) {
+        String heldBy = ProxyHealthStore.lastUsablePhase(proxyInfo, now);
+        if (ProxyPhasePolicy.isProxyUsableSuccessPhase(heldBy)) {
+            return heldBy;
+        }
+        heldBy = ProxyStatusMirror.diagnostic(proxyInfo);
+        if (ProxyPhasePolicy.isFailure(heldBy)) {
+            return ProxyCheckDiagnostics.OK;
+        }
+        return heldBy;
+    }
+
     private static boolean shouldDelayDnsVisiblePhase(String phase) {
         switch (ProxyCheckDiagnostics.normalize(phase)) {
             case ProxyCheckDiagnostics.HOST_RESOLVE_START:
@@ -144,6 +187,10 @@ public final class ProxyRuntimeStateStore {
             default:
                 return false;
         }
+    }
+
+    private static boolean shouldKeepLifecycleFailureTelemetryOnly(String phase) {
+        return ProxyCheckDiagnostics.BACKGROUND_HANDSHAKE_ABORTED.equals(ProxyCheckDiagnostics.normalize(phase));
     }
 
     private static void scheduleDnsVisiblePhase(SharedConfig.ProxyInfo proxyInfo, ProxyConnectionEvent event) {
@@ -293,11 +340,11 @@ public final class ProxyRuntimeStateStore {
             return;
         }
         if (ProxyHealthStore.hasFreshUsableSuccess(proxyInfo, now)) {
-            logControl("decision=held_live_by_usable_success source=" + ProxyConnectionEvent.SOURCE_CONNECT_START + " phase=" + ProxyCheckDiagnostics.CONNECT_START + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + ProxyStatusMirror.diagnostic(proxyInfo));
+            logControl("decision=held_live_by_usable_success source=" + ProxyConnectionEvent.SOURCE_CONNECT_START + " phase=" + ProxyCheckDiagnostics.CONNECT_START + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + heldByUsablePhase(proxyInfo, now));
             return;
         }
         if (isCurrentProxyUsable(proxyInfo, now)) {
-            logControl("decision=held_live_by_current_proxy_usable source=" + ProxyConnectionEvent.SOURCE_CONNECT_START + " phase=" + ProxyCheckDiagnostics.CONNECT_START + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + ProxyStatusMirror.diagnostic(proxyInfo));
+            logControl("decision=held_live_by_current_proxy_usable source=" + ProxyConnectionEvent.SOURCE_CONNECT_START + " phase=" + ProxyCheckDiagnostics.CONNECT_START + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + heldByCurrentProxyPhase(proxyInfo, now));
             return;
         }
         ProxyStatusMirror.markConnectionStarting(proxyInfo, now);
@@ -336,11 +383,11 @@ public final class ProxyRuntimeStateStore {
             return ProxyHealthStore.EndpointFailureResult.noop(normalized);
         }
         if (ProxyHealthStore.hasFreshUsableSuccess(proxyInfo, now)) {
-            logControl("decision=held_by_usable_success source=live_failure phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + ProxyStatusMirror.diagnostic(proxyInfo));
+            logControl("decision=held_by_usable_success source=live_failure phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + heldByUsablePhase(proxyInfo, now));
             return ProxyHealthStore.EndpointFailureResult.noop(normalized);
         }
         if (isCurrentProxyUsable(proxyInfo, now)) {
-            logControl("decision=held_by_current_proxy_usable source=live_failure phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + ProxyStatusMirror.diagnostic(proxyInfo));
+            logControl("decision=held_by_current_proxy_usable source=live_failure phase=" + normalized + " endpoint=" + ProxyEndpointKey.liveStage(proxyInfo) + " held_by=" + heldByCurrentProxyPhase(proxyInfo, now));
             return ProxyHealthStore.EndpointFailureResult.noop(normalized);
         }
         if (shouldHoldHostResolveFailureByDnsOutage(proxyInfo, normalized, now)) {
@@ -445,7 +492,7 @@ public final class ProxyRuntimeStateStore {
             return;
         }
         if (ProxyHealthStore.hasFreshUsableSuccess(proxyInfo, now)) {
-            logControl("decision=held_by_usable_success source=" + ProxyConnectionEvent.SOURCE_PROXY_CHECK + " phase=" + normalizedDiagnostic + " endpoint=" + ProxyEndpointKey.endpoint(proxyInfo) + " held_by=" + ProxyStatusMirror.diagnostic(proxyInfo));
+            logControl("decision=held_by_usable_success source=" + ProxyConnectionEvent.SOURCE_PROXY_CHECK + " phase=" + normalizedDiagnostic + " endpoint=" + ProxyEndpointKey.endpoint(proxyInfo) + " held_by=" + heldByUsablePhase(proxyInfo, now));
             return;
         }
         ProxyHealthStore.rememberProxyCheckFailure(proxyInfo, normalizedDiagnostic, now);
@@ -476,9 +523,9 @@ public final class ProxyRuntimeStateStore {
                 && !isCurrentProxyUsable(currentProxy, now);
         if (currentProxy != null && ProxyEndpointKey.matchesLiveStage(currentProxy, endpointKey) && isCurrentProxyUsable(currentProxy, now)) {
             if (ProxyHealthStore.hasFreshUsableSuccess(currentProxy, now)) {
-                logRotation("decision=held_by_usable_success phase=" + normalized + " endpoint=" + endpointKey + " held_by=" + ProxyStatusMirror.diagnostic(currentProxy));
+                logRotation("decision=held_by_usable_success phase=" + normalized + " endpoint=" + endpointKey + " held_by=" + heldByUsablePhase(currentProxy, now));
             } else {
-                logRotation("decision=held_by_current_proxy_usable phase=" + normalized + " endpoint=" + endpointKey + " held_by=" + ProxyStatusMirror.diagnostic(currentProxy));
+                logRotation("decision=held_by_current_proxy_usable phase=" + normalized + " endpoint=" + endpointKey + " held_by=" + heldByCurrentProxyPhase(currentProxy, now));
             }
             return false;
         }

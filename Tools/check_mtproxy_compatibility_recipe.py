@@ -11,6 +11,8 @@ SOCKET = ROOT / "TMessagesProj/jni/tgnet/ConnectionSocket.cpp"
 ENDPOINT_POLICY = ROOT / "TMessagesProj/jni/tgnet/MtProxyEndpointPolicy.cpp"
 ENDPOINT_POLICY_H = ROOT / "TMessagesProj/jni/tgnet/MtProxyEndpointPolicy.h"
 ADAPTIVE_POLICY = ROOT / "TMessagesProj/jni/tgnet/MtProxyAdaptivePolicy.cpp"
+ADAPTIVE_POLICY_H = ROOT / "TMessagesProj/jni/tgnet/MtProxyAdaptivePolicy.h"
+STATE_MACHINE_H = ROOT / "TMessagesProj/jni/tgnet/ConnectionSocketStateMachine.h"
 DIAGNOSTICS = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyCheckDiagnostics.java"
 PHASE_POLICY = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyPhasePolicy.java"
 ENDPOINT_KEY = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyEndpointKey.java"
@@ -54,6 +56,8 @@ def main() -> int:
     endpoint_policy = read(ENDPOINT_POLICY)
     endpoint_policy_h = read(ENDPOINT_POLICY_H)
     adaptive_policy = read(ADAPTIVE_POLICY)
+    adaptive_policy_h = read(ADAPTIVE_POLICY_H)
+    state_machine_h = read(STATE_MACHINE_H)
     diagnostics = read(DIAGNOSTICS)
     phase_policy = read(PHASE_POLICY)
     endpoint_key = read(ENDPOINT_KEY)
@@ -134,6 +138,48 @@ def main() -> int:
         failures,
     )
     require(
+        "struct MtProxyRecipe" in adaptive_policy_h
+        and "transportMode" in adaptive_policy_h
+        and "tlsProfile" in adaptive_policy_h
+        and "fragmentClientHello" in adaptive_policy_h
+        and "useGrease" in adaptive_policy_h
+        and "useModernExtensions" in adaptive_policy_h
+        and "serverHelloParser" in adaptive_policy_h
+        and "sni" in adaptive_policy_h,
+        "adaptive policy must expose an explicit MtProxyRecipe identity",
+        failures,
+    )
+    require(
+        "recipeCacheKey" in endpoint_policy_h
+        and "currentMtProxyRecipeCacheKey" in state_machine_h
+        and "currentMtProxyRecipeCacheKey" in socket
+        and "mtProxySecretHashForRecipeKey" in socket,
+        "recipe cache must be keyed separately by host:port + secret_hash + SNI without changing the public live endpoint key",
+        failures,
+    )
+    require(
+        "recipeKey = context.recipeCacheKey" in endpoint_policy
+        and "recipeLevelForEndpoint(currentMtProxyRecipeCacheKey)" in socket
+        and "lastRecipeDiagnosticForEndpoint(currentMtProxyRecipeCacheKey)" in socket,
+        "recipe failure/adaptation must read and write the recipe cache key, not the public endpoint key",
+        failures,
+    )
+    require(
+        "recipe_failed" in socket
+        and "next_level" in socket
+        and "recipe_id=" in socket
+        and "server_hello_parser=" in socket,
+        "ConnectionSocket must log each recipe failure with the current recipe identity and next level",
+        failures,
+    )
+    require(
+        "MtProxyRecipe MtProxyAdaptivePolicy::recipeForResult" in adaptive_policy
+        and "std::string MtProxyAdaptivePolicy::recipeId" in adaptive_policy
+        and "standard_fake_tls_hmac_parser" in adaptive_policy,
+        "adaptive policy must derive a stable recipe id including parser variant",
+        failures,
+    )
+    require(
         "result.clientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_OFF" in adaptive_policy
         and "compatibilityTlsProfile" in adaptive_policy
         and "MT_PROXY_TLS_PROFILE_FIREFOX_ANDROID" in adaptive_policy
@@ -144,6 +190,14 @@ def main() -> int:
     require(
         "result.clientHelloFragmentation = MT_PROXY_CLIENT_HELLO_FRAGMENTATION_SOFT" not in block(adaptive_policy, "MtProxyAdaptivePolicy::RecipeResult MtProxyAdaptivePolicy::applyRecipe", "int32_t MtProxyAdaptivePolicy::resolveEffectiveTlsProfile"),
         "post-ClientHello compatibility failures must not escalate by enabling ClientHello fragmentation",
+        failures,
+    )
+    handshake_ok_body = block(endpoint_policy, "void MtProxyEndpointPolicy::recordHandshakeOk", "MtProxyEndpointPolicy::DataPathSuccessResult")
+    require(
+        "server_hello_hmac_ok" in handshake_ok_body
+        and "recipeCacheKey" in handshake_ok_body
+        and "workingRecipeLevel = recipeLevel" in handshake_ok_body,
+        "server_hello_hmac_ok must cache the current working recipe for endpoint+secret+SNI",
         failures,
     )
 

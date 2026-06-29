@@ -15,9 +15,13 @@ class MtProxyEndpointPolicy {
 public:
     struct MtProxyEndpointContext {
         std::string endpointKey;
+        std::string recipeCacheKey;
         std::string networkEndpointKey;
         std::string dnsCacheKey;
         bool fakeTls = false;
+        bool recipeUsesGrease = false;
+        bool recipeIsGreaseProbe = false;
+        bool classicFallbackAllowed = false;
         int32_t connectionPatternMode = MT_PROXY_CONNECTION_PATTERN_OFF;
         int32_t priority = 0;
     };
@@ -48,13 +52,22 @@ public:
         int64_t cooldownMs = 0;
         int64_t usableSuccessRemainingMs = 0;
         int32_t recipeLevel = 0;
+        int32_t alternateProfileIndex = 0;
         int32_t cachedRecipeLevel = 0;
+        int32_t cachedAlternateProfileIndex = 0;
     };
 
     struct DataPathSuccessResult {
         bool accepted = false;
         bool cachedRecipe = false;
         int32_t cachedRecipeLevel = 0;
+    };
+
+    struct GreaseProbeResult {
+        bool useGrease = false;
+        bool probe = false;
+        bool supported = false;
+        bool rejected = false;
     };
 
     static bool extractSslipIpv4Address(const std::string &host, struct in_addr *address, std::string *literalAddress);
@@ -75,7 +88,9 @@ public:
     static FailureResult recordFailure(const MtProxyEndpointContext &context, const std::string &phase, int64_t now);
     static void recordHandshakeOk(const MtProxyEndpointContext &context, const char *reason);
     static DataPathSuccessResult recordDataPathSuccess(const MtProxyEndpointContext &context, const char *reason, int64_t now);
+    static GreaseProbeResult readGreaseProbeState(const std::string &recipeCacheKey);
     static int32_t recipeLevelForEndpoint(const std::string &endpointKey);
+    static int32_t recipeAlternateProfileIndexForEndpoint(const std::string &endpointKey);
     static std::string lastRecipeDiagnosticForEndpoint(const std::string &endpointKey);
     static void resetStateForKey(const std::string &key, int64_t now, bool resetRecipe);
 };

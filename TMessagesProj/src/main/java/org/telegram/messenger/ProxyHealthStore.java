@@ -76,6 +76,24 @@ final class ProxyHealthStore {
         return Math.max(visibleRemaining, Math.max(exactRemaining, networkRemaining));
     }
 
+    static String lastUsablePhase(SharedConfig.ProxyInfo proxyInfo, long now) {
+        if (proxyInfo == null) {
+            return ProxyCheckDiagnostics.UNKNOWN_FAIL;
+        }
+        String visible = ProxyStatusMirror.diagnostic(proxyInfo);
+        if (ProxyStatusMirror.visibleUsableSuccessRemainingMs(proxyInfo, now, USABLE_SUCCESS_HOLD_MS) > 0
+                && ProxyPhasePolicy.isProxyUsableSuccessPhase(visible)) {
+            return visible;
+        }
+        EndpointState exactState = endpointStates.get(ProxyEndpointKey.exact(proxyInfo));
+        EndpointState networkState = endpointStates.get(ProxyEndpointKey.network(proxyInfo));
+        EndpointState state = freshestUsableState(exactState, networkState, now);
+        if (state != null && ProxyPhasePolicy.isProxyUsableSuccessPhase(state.lastUsablePhase)) {
+            return state.lastUsablePhase;
+        }
+        return ProxyCheckDiagnostics.UNKNOWN_FAIL;
+    }
+
     static long lastUsableSuccessAgeMs(SharedConfig.ProxyInfo proxyInfo, long now) {
         if (proxyInfo == null) {
             return -1;
@@ -241,6 +259,22 @@ final class ProxyHealthStore {
         return state == null ? 0 : state.lastUsableSuccessTime;
     }
 
+    private static EndpointState freshestUsableState(EndpointState first, EndpointState second, long now) {
+        boolean firstFresh = first != null
+                && first.usableSuccessUntil > now
+                && ProxyPhasePolicy.isProxyUsableSuccessPhase(first.lastUsablePhase);
+        boolean secondFresh = second != null
+                && second.usableSuccessUntil > now
+                && ProxyPhasePolicy.isProxyUsableSuccessPhase(second.lastUsablePhase);
+        if (!firstFresh) {
+            return secondFresh ? second : null;
+        }
+        if (!secondFresh) {
+            return first;
+        }
+        return second.lastUsableSuccessTime > first.lastUsableSuccessTime ? second : first;
+    }
+
     private static void rememberEndpointConnected(EndpointState state, String diagnostic, long now, boolean usableSuccess) {
         state.consecutiveFailures = 0;
         state.rotationFailures = 0;
@@ -253,6 +287,7 @@ final class ProxyHealthStore {
         state.rotatedAwayUntil = 0;
         if (usableSuccess) {
             state.lastUsableSuccessTime = now;
+            state.lastUsablePhase = state.lastDiagnostic;
         }
     }
 
@@ -382,6 +417,7 @@ final class ProxyHealthStore {
         long rotationFailureWindowStartTime;
         EndpointLifecycle lifecycle = EndpointLifecycle.TESTING;
         String lastDiagnostic = ProxyCheckDiagnostics.UNKNOWN_FAIL;
+        String lastUsablePhase = ProxyCheckDiagnostics.UNKNOWN_FAIL;
         long lastCheckTime;
         long nextCheckTime;
         long usableSuccessUntil;

@@ -184,7 +184,7 @@ def main() -> None:
         require(phase in recipe, f"FakeTLS recipe must react to {phase}")
     require(
         "context.fakeTls = currentSecretIsFakeTls" in failure
-        and "context.fakeTls && failureNeedsRecipe(phase)" in endpoint_policy,
+        and "context.fakeTls && needsRecipe" in endpoint_policy,
         "recipe level must advance only for FakeTLS connections",
     )
     require(

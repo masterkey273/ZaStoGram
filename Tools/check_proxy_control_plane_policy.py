@@ -99,6 +99,7 @@ def main() -> int:
     require(policy, "FIRST_TLS_APP_RECV", "ProxyPhasePolicy must treat first TLS app recv as usable success", failures)
     require(policy, "FIRST_MTPROXY_PACKET_RECV", "ProxyPhasePolicy must treat first MTProxy packet recv as usable success", failures)
     require(policy, "SERVER_HELLO_HMAC_OK", "ProxyPhasePolicy must explicitly classify server hello as handshake only", failures)
+    require(diagnostics, "BACKGROUND_HANDSHAKE_ABORTED", "ProxyCheckDiagnostics must expose background/screen-off FakeTLS aborts", failures)
     for phase in (
         "CONNECTION_NOT_STARTED",
         "ADMISSION_TIMEOUT",
@@ -113,6 +114,9 @@ def main() -> int:
         decision = phase_return(policy, phase)
         if "failure(" not in decision or "true, true" not in decision:
             failures.append(f"ProxyPhasePolicy must keep real network phase {phase.lower()} punitive")
+    background_decision = phase_return(policy, "BACKGROUND_HANDSHAKE_ABORTED")
+    if "failure(" not in background_decision or "false, false" not in background_decision:
+        failures.append("ProxyPhasePolicy must classify background_handshake_aborted as non-punitive lifecycle telemetry")
 
     for phase in sorted(endpoint_key_phases(ENDPOINT_NETWORK)):
         require(policy, f'case ProxyCheckDiagnostics.{phase.upper()}'.replace("NETWORK_BLOCK_SUSPECTED", "NETWORK_BLOCK_SUSPECTED"), f"ProxyPhasePolicy must assign network key scope for {phase}", failures)
@@ -129,6 +133,8 @@ def main() -> int:
     require(health, "decision=backoff", "terminal failures without usable success must record backoff decisions in health store", failures)
     require(store, "decision=ignored_stale_endpoint", "stale endpoint/secret native events must be ignored", failures)
     require(store, "decision=visible_only", "non-terminal live stages should be visible-only decisions", failures)
+    require(store, "shouldKeepLifecycleFailureTelemetryOnly", "lifecycle/screen-off handshake aborts must stay telemetry-only", failures)
+    require(store, "BACKGROUND_HANDSHAKE_ABORTED", "background_handshake_aborted must not overwrite visible proxy status", failures)
     require(store, "decision=rotation_trigger", "rotation-triggering failures must be explicit decisions", failures)
     require(health, "clearEndpointBackoff", "usable success must clear exact and network endpoint backoff", failures)
     require(store, "shouldScheduleFallback", "rotation must ask the store whether a fallback should be scheduled", failures)

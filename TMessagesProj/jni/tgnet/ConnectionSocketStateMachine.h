@@ -182,12 +182,14 @@ public:
         int32_t currentProxyTlsProfile = 0;
         int32_t currentEffectiveProxyTlsProfile = 0;
         int32_t currentClientHelloFragmentation = 0;
+        int32_t currentServerHelloParserMode = 0;
         int32_t currentConnectionPatternMode = 0;
         int32_t currentRecordSizingMode = 0;
         int32_t currentTimingMode = 0;
         int32_t currentStartupCoverMode = 0;
         std::string currentProxyTlsProfileKey;
         std::string currentMtProxyEndpointKey;
+        std::string currentMtProxyRecipeCacheKey;
         std::string currentMtProxyNetworkEndpointKey;
         std::string currentMtProxyDnsCacheKey;
         std::string currentMtProxyAdmissionKey;

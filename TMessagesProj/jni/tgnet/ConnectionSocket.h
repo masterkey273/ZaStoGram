@@ -153,11 +153,18 @@ private:
     void recordMtProxyEndpointDataPathSuccess(const char *reason);
     bool mtProxyEndpointUseCachedHostAddress(const std::string &host, bool *ipv6);
     void mtProxyEndpointStoreResolvedAddress(const std::string &host, const std::string &ip);
+    std::string currentMtProxyRecipeId();
+    std::string mtProxyRecipeIdForPolicyState(int32_t recipeLevel, int32_t alternateProfileIndex, bool greaseSupported, bool probeGrease);
+    std::string nextMtProxyRecipeIdAfterFailure(int32_t recipeLevel, int32_t alternateProfileIndex);
+    bool currentMtProxyRecipeUsesGrease();
+    bool currentMtProxyRecipeIsGreaseProbe();
+    bool mtProxyClassicFallbackAllowed();
     void applyMtProxyPhaseAdaptiveRecipe();
     void rotateMtProxyTlsProfileOnFailureIfNeeded(int32_t reason, int32_t error);
     void logMtProxyTlsAfterClientHello(size_t responseBytes);
     const char *classifyMtProxyPostClientHelloResponse(size_t responseBytes);
     void closeMtProxyPostClientHelloResponse(const char *diagnostic, const char *reason, int32_t error);
+    bool didPauseDuringProxyServerHelloWait(int64_t now);
     void markProxyHandshakeClientHelloSent();
     void markProxyHandshakeFreezeIfNeeded();
     void markProxyServerHelloHmacTimeoutIfNeeded();

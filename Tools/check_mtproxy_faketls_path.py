@@ -448,6 +448,16 @@ def main() -> int:
         "FakeTLS server-hello freezes must close the dead socket instead of waiting for the generic timeout",
     )
     require(
+        "faketls_server_hello_wait_timeout" in cpp
+        and "admission_freeze_detected" not in cpp
+        and "didPauseDuringProxyServerHelloWait" in cpp
+        and "lastMonotonicPauseTime" in cpp
+        and '"background_handshake_aborted"' in cpp
+        and 'releaseProxyHandshakeAdmission(false, pausedDuringHandshake ? "background_handshake_aborted" : "freeze_timeout")' in cpp
+        and 'strcmp(diagnostic, "background_handshake_aborted") == 0' in cpp,
+        "FakeTLS ServerHello wait timeout must be named accurately and screen-off/background aborts must stay local",
+    )
+    require(
         "recv_eof" in cpp
         and "closeSocket(1, 0)" in cpp,
         "TCP EOF must close the socket immediately instead of waiting for the generic timeout",

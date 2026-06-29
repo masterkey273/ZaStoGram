@@ -81,6 +81,7 @@ FAKETLS_FAILURE_VERDICTS = {
     "short_tls_response_after_client_hello",
     "unrecognized_tls_response_after_client_hello",
     "server_hello_hmac_mismatch",
+    "background_handshake_aborted",
     "unsupported_for_current_client",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
@@ -345,6 +346,7 @@ class Attempt:
             "post_client_hello_response_failed": "post_client_hello_response_failed",
             "unsupported_for_current_client": "unsupported_for_current_client",
             "recipe_exhausted": "recipe_exhausted",
+            "recipe_failed": "recipe_failed",
             "endpoint_cooldown": "endpoint_cooldown",
             "tcp_connect_gate": "tcp_connect_gate",
             "tcp_connect_gate_wait": "tcp_connect_gate_wait",
@@ -369,6 +371,7 @@ class Attempt:
             "server_hello_hmac_mismatch": "server_hello_hmac_mismatch",
             "server_hello_hmac_timeout": "server_hello_hmac_timeout",
             "server_hello_timeout_close": "server_hello_timeout_close",
+            "background_handshake_aborted": "background_handshake_aborted",
             "close_ignored_already_closed": "close_ignored_already_closed",
             "connection_close_ignored_already_notified": "connection_close_ignored_already_notified",
             "reconnect_backoff_suppressed": "reconnect_backoff_suppressed",
@@ -393,6 +396,7 @@ class Attempt:
             "admission_tcp_failure_cooldown": "admission_tcp_failure_cooldown",
             "admission_freeze_cooldown": "admission_freeze_cooldown",
             "admission_failure_cooldown": "admission_failure_cooldown",
+            "faketls_server_hello_wait_timeout": "faketls_server_hello_wait_timeout",
             "admission_freeze_detected": "admission_freeze_detected",
             "admission_freeze_observed": "admission_freeze_observed",
             "admission_hold_after_client_hello_failure": "admission_hold_after_client_hello_failure",
@@ -471,6 +475,8 @@ class Attempt:
         if not has("client_hello_sent"):
             return "tcp_connected_no_pong"
         if not has("server_hello_hmac_ok"):
+            if has("background_handshake_aborted"):
+                return "background_handshake_aborted"
             if has("unsupported_for_current_client"):
                 return "unsupported_for_current_client"
             if has("tls_alert_after_client_hello"):
@@ -481,7 +487,7 @@ class Attempt:
                 return "unrecognized_tls_response_after_client_hello"
             if has("server_hello_hmac_mismatch") or has("server_hello_hmac_timeout") or has("server_hello_hmac_wait"):
                 return "server_hello_hmac_mismatch"
-            if has("client_hello_sent_no_server_hello") or has("server_hello_timeout_close") or has("admission_freeze_detected"):
+            if has("client_hello_sent_no_server_hello") or has("server_hello_timeout_close") or has("faketls_server_hello_wait_timeout") or has("admission_freeze_detected"):
                 return "client_hello_sent_no_server_hello"
             if has("recv_eof"):
                 return "client_hello_sent_no_server_hello"
@@ -1745,6 +1751,7 @@ def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     print("- dns_coalesce_wait: client delayed a duplicate cold DNS resolve for the same proxy host:port.")
     print("- dns_cache_hit/dns_cache_store: client used or updated the last-good IP for a domain proxy.")
     print("- phase_adaptive_recipe: client changed the next FakeTLS startup recipe after a phase-specific failure.")
+    print("- recipe_failed: current FakeTLS recipe failed and the next attempt should move along the recipe ladder, not mark the endpoint bad yet.")
     print("- shadowed_by_usable_success: a late sibling startup failure was ignored because this endpoint recently delivered app-data.")
     print("- telemetry_only: Java kept per-connection DNS telemetry out of the visible proxy status.")
     print("- visible_delayed_dns: Java showed DNS only after the DNS telemetry stayed unresolved past the debounce window.")
