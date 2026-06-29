@@ -194,23 +194,43 @@ public class PluginContext {
     private static final class PythonHook extends XC_MethodHook {
         private final String pluginId;
         private final PyObject pyHook;
+        private final boolean replacement;
 
         PythonHook(String pluginId, PyObject pyHook) {
             this.pluginId = pluginId;
             this.pyHook = pyHook;
+            this.replacement = isReplacement(pyHook);
+        }
+
+        private static boolean isReplacement(PyObject h) {
+            try {
+                PyObject flag = h.get("_is_replacement");
+                return flag != null && Boolean.TRUE.equals(flag.toJava(Boolean.class));
+            } catch (Throwable t) {
+                return false;
+            }
         }
 
         @Override
         protected void beforeHookedMethod(MethodHookParam param) {
             try {
-                pyHook.callAttr("before_hooked_method", param);
+                if (replacement) {
+                    // MethodReplacement: its return value becomes the result; the original does NOT run.
+                    PyObject r = pyHook.callAttr("replace_hooked_method", param);
+                    param.setResult(r == null ? null : r.toJava(Object.class));
+                } else {
+                    pyHook.callAttr("before_hooked_method", param);
+                }
             } catch (Throwable t) {
-                PluginsController.logError(pluginId, "before_hooked_method", t);
+                PluginsController.logError(pluginId, replacement ? "replace_hooked_method" : "before_hooked_method", t);
             }
         }
 
         @Override
         protected void afterHookedMethod(MethodHookParam param) {
+            if (replacement) {
+                return;
+            }
             try {
                 pyHook.callAttr("after_hooked_method", param);
             } catch (Throwable t) {

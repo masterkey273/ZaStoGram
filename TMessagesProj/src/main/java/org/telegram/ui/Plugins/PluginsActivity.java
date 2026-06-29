@@ -185,6 +185,9 @@ public class PluginsActivity extends BaseFragment implements NotificationCenter.
         if (meta == null || TextUtils.isEmpty(meta.id)) {
             return false; // not a recognizable plugin — let the normal open proceed
         }
+        PluginInfo existing = PluginsController.getInstance().findById(meta.id);
+        final boolean isUpdate = existing != null;
+
         StringBuilder sb = new StringBuilder();
         sb.append(meta.displayName());
         if (!TextUtils.isEmpty(meta.version)) {
@@ -192,6 +195,11 @@ public class PluginsActivity extends BaseFragment implements NotificationCenter.
         }
         if (!TextUtils.isEmpty(meta.author)) {
             sb.append("\n").append(meta.author);
+        }
+        if (isUpdate) {
+            String cur = TextUtils.isEmpty(existing.version) ? "?" : existing.version;
+            String next = TextUtils.isEmpty(meta.version) ? "?" : meta.version;
+            sb.append("\n\nУже установлен: v").append(cur).append("  →  v").append(next);
         }
         if (!TextUtils.isEmpty(meta.description)) {
             sb.append("\n\n").append(meta.description);
@@ -202,9 +210,9 @@ public class PluginsActivity extends BaseFragment implements NotificationCenter.
         }
         org.telegram.ui.ActionBar.AlertDialog.Builder builder =
                 new org.telegram.ui.ActionBar.AlertDialog.Builder(activity);
-        builder.setTitle("Установить плагин?");
+        builder.setTitle(isUpdate ? "Обновить плагин?" : "Установить плагин?");
         builder.setMessage(sb.toString());
-        builder.setPositiveButton("Установить", (dialog, which) -> {
+        builder.setPositiveButton(isUpdate ? "Обновить" : "Установить", (dialog, which) -> {
             dialog.dismiss();
             PluginInfo installed = PluginsController.getInstance().installFromFile(file);
             BaseFragment last = org.telegram.plugins.PluginUtils.getLastFragment();

@@ -61,6 +61,18 @@ class XposedHook(MethodHook):
             self._after(param)
 
 
+class MethodReplacement(MethodHook):
+    """
+    Xposed-style full method replacement. The return value of replace_hooked_method(param) becomes
+    the hooked method's result and the original implementation does NOT run. Pass an instance to
+    self.hook_method(member, MethodReplacement(...)) just like a MethodHook.
+    """
+    _is_replacement = True
+
+    def replace_hooked_method(self, param):
+        return None
+
+
 class MenuItemType:
     """Which app menu an added item appears in (see BasePlugin.add_menu_item)."""
     MESSAGE_CONTEXT_MENU = "message_context_menu"  # long-press on a message
