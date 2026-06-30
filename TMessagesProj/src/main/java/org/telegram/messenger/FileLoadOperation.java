@@ -1556,6 +1556,7 @@ public class FileLoadOperation {
         if (state != stateDownloading && state != stateCancelling) {
             return;
         }
+        final boolean finishAfterCancelRequests = state == stateCancelling;
         state = stateFinished;
         notifyStreamListeners();
         cleanup();
@@ -1595,6 +1596,13 @@ public class FileLoadOperation {
                 }
                 File cacheFileTempLocal = cacheFileTempFinal;
                 if (cacheFileTempLocal != null) {
+                    if (finishAfterCancelRequests && !cacheFileTempLocal.exists()) {
+                        if (BuildVars.LOGS_ENABLED) {
+                            FileLog.d("file_load_cancelled_missing_temp temp=" + cacheFileTempLocal + " final=" + cacheFileFinal);
+                        }
+                        Utilities.stageQueue.postRunnable(() -> onFail(false, 1));
+                        return;
+                    }
                     if (ungzip) {
                         try {
                             GZIPInputStream gzipInputStream = new GZIPInputStream(new FileInputStream(cacheFileTempLocal));
@@ -2484,12 +2492,18 @@ public class FileLoadOperation {
             flags |= ConnectionsManager.RequestFlagListenAfterCancel;
             int datacenterId = isCdn ? cdnDatacenterId : this.datacenterId;
             final int requestToken = requestInfo.requestToken = ConnectionsManager.getInstance(currentAccount).sendRequestSync(request, (response, error) -> {
-                if (requestInfo.cancelled) {
-                    FileLog.e("received chunk but definitely cancelled offset=" + requestInfo.offset + " size=" + requestInfo.chunkSize + " token=" + requestInfo.requestToken);
+                if (requestInfo.cancelled || requestInfo.cancelling || state == stateCancelling || state == stateCanceled) {
+                    if (BuildVars.LOGS_ENABLED) {
+                        FileLog.d("received_cancelled_chunk_after_cancelRequests_debug offset=" + requestInfo.offset + " size=" + requestInfo.chunkSize + " token=" + requestInfo.requestToken + " cancelled=" + requestInfo.cancelled + " cancelling=" + requestInfo.cancelling + " state=" + state);
+                    }
+                    if (response != null) {
+                        response.freeResources();
+                    }
+                    if (requestInfo.whenCancelled != null) {
+                        requestInfo.whenCancelled.run();
+                        requestInfo.whenCancelled = null;
+                    }
                     return;
-                }
-                if (requestInfo.cancelling) {
-                    FileLog.e("received cancelled chunk after cancelRequests! offset=" + requestInfo.offset + " size=" + requestInfo.chunkSize + " token=" + requestInfo.requestToken);
                 }
                 if (!requestInfos.contains(requestInfo)) {
                     if (!cancelledRequestInfos.contains(requestInfo)) {

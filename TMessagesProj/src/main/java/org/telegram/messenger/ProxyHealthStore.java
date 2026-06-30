@@ -242,9 +242,9 @@ final class ProxyHealthStore {
         }
         boolean insideWindow = state.rotationFailureWindowStartTime != 0
                 && now - state.rotationFailureWindowStartTime <= PUNITIVE_FAILURE_WINDOW_MS;
+        boolean oneShotTerminal = ProxyPhasePolicy.isOneShotTerminal(normalized);
         boolean rotationAllowed = ProxyPhasePolicy.canRotate(normalized)
-                && insideWindow
-                && state.rotationFailures >= PUNITIVE_FAILURES_TO_ROTATE;
+                && (oneShotTerminal || (insideWindow && state.rotationFailures >= PUNITIVE_FAILURES_TO_ROTATE));
         return new EndpointFailureResult(normalized, state.consecutiveFailures, state.rotationFailures, rotationAllowed, false);
     }
 
@@ -299,6 +299,7 @@ final class ProxyHealthStore {
         state.lastDiagnostic = ProxyCheckDiagnostics.normalize(diagnostic);
         state.lastCheckTime = now;
         state.consecutiveFailures++;
+        boolean oneShotTerminal = ProxyPhasePolicy.isOneShotTerminal(state.lastDiagnostic);
         if (ProxyPhasePolicy.canRotate(state.lastDiagnostic)) {
             if (state.rotationFailureWindowStartTime == 0 || now - state.rotationFailureWindowStartTime > PUNITIVE_FAILURE_WINDOW_MS) {
                 state.rotationFailureWindowStartTime = now;
@@ -306,13 +307,17 @@ final class ProxyHealthStore {
             } else {
                 state.rotationFailures++;
             }
+            if (oneShotTerminal && state.rotationFailures < PUNITIVE_FAILURES_TO_ROTATE) {
+                state.rotationFailures = PUNITIVE_FAILURES_TO_ROTATE;
+            }
         } else {
             state.rotationFailureWindowStartTime = 0;
             state.rotationFailures = 0;
         }
         long backoff = failureBackoffMs(state.lastDiagnostic, state.consecutiveFailures);
         state.nextCheckTime = now + backoff;
-        boolean rotationAllowed = ProxyPhasePolicy.canRotate(state.lastDiagnostic) && state.rotationFailures >= PUNITIVE_FAILURES_TO_ROTATE;
+        boolean rotationAllowed = ProxyPhasePolicy.canRotate(state.lastDiagnostic)
+                && (state.rotationFailures >= PUNITIVE_FAILURES_TO_ROTATE || oneShotTerminal);
         if (rotationAllowed) {
             state.lifecycle = EndpointLifecycle.QUARANTINED;
         }

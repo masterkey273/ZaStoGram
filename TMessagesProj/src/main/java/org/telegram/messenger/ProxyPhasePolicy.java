@@ -77,6 +77,17 @@ public final class ProxyPhasePolicy {
         return kind(phase) == Kind.FAILURE;
     }
 
+    public static boolean isOneShotTerminal(String phase) {
+        switch (ProxyCheckDiagnostics.normalize(phase)) {
+            case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:
+            case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
+            case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     public static boolean shouldAccelerateProxyRotation(String phase) {
         return canRotate(phase);
     }
@@ -90,6 +101,8 @@ public final class ProxyPhasePolicy {
             case ProxyCheckDiagnostics.OK:
             case ProxyCheckDiagnostics.CHECKING:
             case ProxyCheckDiagnostics.CANCELLED:
+            case ProxyCheckDiagnostics.SHADOWED_SOCKET_FAILURE:
+            case ProxyCheckDiagnostics.IGNORED_CANCELLED_GENERATION:
                 return NEUTRAL_NONE;
 
             case ProxyCheckDiagnostics.ADMISSION_QUEUE:

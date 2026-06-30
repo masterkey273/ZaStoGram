@@ -82,6 +82,7 @@ public:
     void applyDnsConfig(NativeByteBuffer *buffer, std::string phone, int32_t date);
     int64_t checkProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, const MtProxyOptions &options, onRequestTimeFunc requestTimeFunc, jobject ptr1);
     void cancelProxyCheck(int64_t pingId);
+    void cancelProxyEndpointAttempts(std::string endpointKey, std::string reason);
 
 #ifdef ANDROID
     void sendRequest(TLObject *object, onCompleteFunc onComplete, onQuickAckFunc onQuickAck, onWriteToSocketFunc onWriteToSocket, onRequestClearFunc onClear, uint32_t flags, uint32_t datacenterId, ConnectionType connectionType, bool immediate, int32_t requestToken);
@@ -131,6 +132,9 @@ private:
     bool hasPendingRequestsForConnection(Connection *connection);
     void attachConnection(ConnectionSocket *connection);
     void detachConnection(ConnectionSocket *connection);
+    bool shouldDebounceTransportSettingsReconnect(int64_t now);
+    void requestTransportSettingsReconnect(const char *reason);
+    void applyTransportSettingsReconnect(const char *reason);
     TLObject *TLdeserialize(TLObject *request, uint32_t bytes, NativeByteBuffer *data);
     TLObject *getRequestWithMessageId(int64_t messageId);
     void onDatacenterHandshakeComplete(Datacenter *datacenter, HandshakeType type, int32_t timeDiff);
@@ -214,6 +218,8 @@ private:
     bool wssSocksEnabled = false;
     bool wssUseForMiniApps = false;
     bool wssEnabled = false;
+    int64_t transportSettingsStartupSettleUntil = 0;
+    bool transportSettingsReconnectPending = false;
     int32_t lastPingProxyId = 2000000;
     std::vector<std::unique_ptr<ProxyCheckInfo>> proxyCheckQueue;
     std::vector<std::unique_ptr<ProxyCheckInfo>> proxyActiveChecks;

@@ -88,6 +88,9 @@ PHASES = (
     MtProxyPhase("connected_without_socket_connected_marker", PHASE_NEUTRAL, native=False, java=False, analyzer=True, endpoint_key=ENDPOINT_NONE),
     MtProxyPhase("handshake_ok_no_appdata_sent", PHASE_NEUTRAL, native=False, java=False, analyzer=True, endpoint_key=ENDPOINT_NONE),
     MtProxyPhase("shadowed_by_usable_success", PHASE_NEUTRAL, native=False, java=False, analyzer=True, endpoint_key=ENDPOINT_NONE),
+    MtProxyPhase("shadowed_socket_failure", PHASE_NEUTRAL, native=True, java=True, analyzer=True, endpoint_key=ENDPOINT_EXACT),
+    MtProxyPhase("ignored_cancelled_generation", PHASE_NEUTRAL, native=True, java=True, analyzer=True, endpoint_key=ENDPOINT_EXACT),
+    MtProxyPhase("reconnect_backoff_suppressed", PHASE_NEUTRAL, native=True, java=False, analyzer=True, endpoint_key=ENDPOINT_NONE),
 )
 
 

@@ -154,16 +154,17 @@ def run_runtime_rotation_log_checks(failures: list[str]) -> None:
         )
         rotated_away_bad.write_text(
             runtime_log_fixture(
-                "06-25 20:34:00.000 proxy_rotation decision=waiting_hysteresis phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=1 required=2",
-                "06-25 20:34:00.900 proxy_rotation decision=trigger phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=2 required=2",
+                "06-25 20:34:00.000 proxy_control decision=terminal_quarantine source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
+                "06-25 20:34:00.010 proxy_control decision=cancel_endpoint_attempts source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army cancelled=3",
                 "06-25 20:34:01.050 proxy_control decision=visible_only source=native_stage account=0 phase=endpoint_cooldown endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
             ),
             encoding="utf-8",
         )
         rotated_away_good.write_text(
             runtime_log_fixture(
-                "06-25 20:34:00.000 proxy_rotation decision=waiting_hysteresis phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=1 required=2",
-                "06-25 20:34:00.900 proxy_rotation decision=trigger phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army count=2 required=2",
+                "06-25 20:34:00.000 proxy_control decision=terminal_quarantine source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
+                "06-25 20:34:00.010 proxy_control decision=cancel_endpoint_attempts source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army cancelled=3",
+                "06-25 20:34:00.020 proxy_control decision=ignored_rotated_away source=native_stage account=0 phase=ignored_cancelled_generation endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
                 "06-25 20:34:01.050 proxy_control decision=ignored_rotated_away source=native_stage account=0 phase=endpoint_cooldown endpoint=sberbank.dns.army:45631:ee:sberbank.dns.army",
             ),
             encoding="utf-8",
@@ -414,17 +415,14 @@ def main() -> int:
         ordered(
             should_schedule_fallback,
             "boolean result = candidate && failure.rotationAllowed;",
-            "ProxyHealthStore.quarantineExactEndpoint(currentProxy, normalized, now);",
-            "ProxyHealthStore.ignoreEndpointTelemetry(endpointKey, now);",
-            "ProxyCheckScheduler.cancelEndpointAttempts(endpointKey);",
+            "quarantineAndCancelEndpoint(currentProxy, normalized, endpointKey",
             "decision=trigger",
         ),
         "fallback scheduling must quarantine the exact endpoint, ignore its late telemetry, and cancel endpoint checks before logging trigger",
         failures,
     )
     require(
-        "ProxyHealthStore.quarantineExactEndpoint(proxyInfo, normalized, now)" in mark_endpoint_failure
-        and "ProxyHealthStore.ignoreEndpointTelemetry(ProxyEndpointKey.liveStage(proxyInfo), now)" in mark_endpoint_failure,
+        "quarantineAndCancelEndpoint(proxyInfo, normalized, ProxyEndpointKey.liveStage(proxyInfo)" in mark_endpoint_failure,
         "scheduled explicit rotation failures must quarantine and ignore the rotated-away endpoint too",
         failures,
     )

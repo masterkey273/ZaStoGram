@@ -62,6 +62,8 @@ public class ProxyCheckDiagnostics {
     public static final String POST_HANDSHAKE_NO_APPDATA = "post_handshake_no_appdata";
     public static final String DROPPED_EARLY_AFTER_APPDATA = "dropped_early_after_appdata";
     public static final String DROPPED_AFTER_APPDATA = "dropped_after_appdata";
+    public static final String SHADOWED_SOCKET_FAILURE = "shadowed_socket_failure";
+    public static final String IGNORED_CANCELLED_GENERATION = "ignored_cancelled_generation";
     public static final String CANCELLED = "cancelled";
     public static final String UNKNOWN_FAIL = "unknown_fail";
 
@@ -121,6 +123,8 @@ public class ProxyCheckDiagnostics {
             case POST_HANDSHAKE_NO_APPDATA:
             case DROPPED_EARLY_AFTER_APPDATA:
             case DROPPED_AFTER_APPDATA:
+            case SHADOWED_SOCKET_FAILURE:
+            case IGNORED_CANCELLED_GENERATION:
             case CANCELLED:
             case UNKNOWN_FAIL:
                 return diagnostic;

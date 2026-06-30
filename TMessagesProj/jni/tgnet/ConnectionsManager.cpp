@@ -113,8 +113,11 @@ static const char *proxyCheckDiagnosticForClose(ProxyCheckInfo *proxyCheckInfo, 
     return diagnostic;
 }
 
+static constexpr int64_t TRANSPORT_SETTINGS_STARTUP_SETTLE_MS = 800;
+
 ConnectionsManager::ConnectionsManager(int32_t instance) {
     instanceNum = instance;
+    transportSettingsStartupSettleUntil = getCurrentTimeMonotonicMillis() + TRANSPORT_SETTINGS_STARTUP_SETTLE_MS;
     if ((epolFd = epoll_create(128)) == -1) {
         if (LOGS_ENABLED) DEBUG_E("unable to create epoll instance");
         exit(1);
@@ -275,6 +278,9 @@ void ConnectionsManager::select() {
     checkPendingTasks();
     int64_t now = getCurrentTimeMonotonicMillis();
     callEvents(now);
+    if (transportSettingsReconnectPending && !shouldDebounceTransportSettingsReconnect(now)) {
+        applyTransportSettingsReconnect("startup_settle");
+    }
     for (int32_t a = 0; a < eventsCount; a++) {
         auto eventObject = (EventObject *) epollEvents[a].data.ptr;
         eventObject->onEvent(epollEvents[a].events);
@@ -2080,6 +2086,39 @@ void ConnectionsManager::detachConnection(ConnectionSocket *connection) {
     }
 }
 
+bool ConnectionsManager::shouldDebounceTransportSettingsReconnect(int64_t now) {
+    return transportSettingsStartupSettleUntil > now;
+}
+
+void ConnectionsManager::requestTransportSettingsReconnect(const char *reason) {
+    int64_t now = getCurrentTimeMonotonicMillis();
+    const char *safeReason = reason != nullptr ? reason : "unknown";
+    if (shouldDebounceTransportSettingsReconnect(now)) {
+        transportSettingsReconnectPending = true;
+        if (LOGS_ENABLED) {
+            DEBUG_D("transport_settings_reconnect_deferred reason=%s wait_ms=%ld", safeReason, (long) (transportSettingsStartupSettleUntil - now));
+        }
+        return;
+    }
+    applyTransportSettingsReconnect(safeReason);
+}
+
+void ConnectionsManager::applyTransportSettingsReconnect(const char *reason) {
+    transportSettingsReconnectPending = false;
+    const char *safeReason = reason != nullptr ? reason : "unknown";
+    if (LOGS_ENABLED) {
+        DEBUG_D("transport_settings_reconnect_apply reason=%s", safeReason);
+    }
+    for (auto & datacenter : datacenters) {
+        datacenter.second->suspendConnections(true);
+    }
+    Datacenter *datacenter = getDatacenterWithId(DEFAULT_DATACENTER_ID);
+    if (datacenter != nullptr && datacenter->isHandshakingAny()) {
+        datacenter->beginHandshake(HandshakeTypeCurrent, true);
+    }
+    processRequestQueue(0, 0);
+}
+
 int32_t ConnectionsManager::sendRequestInternal(TLObject *object, onCompleteFunc onComplete, onQuickAckFunc onQuickAck, onRequestClearFunc onClear, uint32_t flags, uint32_t datacenterId, ConnectionType connectionType, bool immediate) {
     auto request = new Request(instanceNum, lastRequestToken++, connectionType, flags, datacenterId, onComplete, onQuickAck, nullptr, onClear);
     request->rawRequest = object;
@@ -3868,6 +3907,7 @@ void ConnectionsManager::init(uint32_t version, int32_t layer, int32_t apiId, st
     currentNetworkType = networkType;
     networkAvailable = hasNetwork;
     currentPerformanceClass = performanceClass;
+    transportSettingsStartupSettleUntil = getCurrentTimeMonotonicMillis() + TRANSPORT_SETTINGS_STARTUP_SETTLE_MS;
     if (isPaused) {
         lastPauseTime = getCurrentTimeMonotonicMillis();
     }
@@ -3937,14 +3977,7 @@ void ConnectionsManager::setProxySettings(std::string address, uint16_t port, st
             }
         }
         if (reconnect) {
-            for (auto & datacenter : datacenters) {
-                datacenter.second->suspendConnections(true);
-            }
-            Datacenter *datacenter = getDatacenterWithId(DEFAULT_DATACENTER_ID);
-            if (datacenter != nullptr && datacenter->isHandshakingAny()) {
-                datacenter->beginHandshake(HandshakeTypeCurrent, true);
-            }
-            processRequestQueue(0, 0);
+            requestTransportSettingsReconnect("proxy_settings_changed");
         }
     });
 }
@@ -3999,14 +4032,7 @@ void ConnectionsManager::setWssTransportSettings(int32_t mode, int32_t gatewayMo
         wssEnabled = enabled;
         if (wssTransportChanged) {
             if (LOGS_ENABLED) DEBUG_D("wss_startup settings_changed mode=%d gateway=%d host=%s port=%u path=%s socks_host=%s socks_port=%u socks_enabled=%d miniapps=%d enabled=%d", wssTransportMode, wssGatewayMode, wssHost.c_str(), (uint32_t) wssPort, wssPath.c_str(), wssSocksHost.c_str(), (uint32_t) wssSocksPort, wssSocksEnabled ? 1 : 0, wssUseForMiniApps ? 1 : 0, wssEnabled ? 1 : 0);
-            for (auto & datacenter : datacenters) {
-                datacenter.second->suspendConnections(true);
-            }
-            Datacenter *datacenter = getDatacenterWithId(DEFAULT_DATACENTER_ID);
-            if (datacenter != nullptr && datacenter->isHandshakingAny()) {
-                datacenter->beginHandshake(HandshakeTypeCurrent, true);
-            }
-            processRequestQueue(0, 0);
+            requestTransportSettingsReconnect("wss_settings_changed");
         }
     });
 }
@@ -4186,6 +4212,27 @@ void ConnectionsManager::cancelProxyCheck(int64_t pingId) {
             }
         }
         if (LOGS_ENABLED) DEBUG_D("proxy_check_cancel source=missing ping_id=%" PRId64 " reason=cancelled", pingId);
+    });
+}
+
+void ConnectionsManager::cancelProxyEndpointAttempts(std::string endpointKey, std::string reason) {
+    if (endpointKey.empty()) {
+        return;
+    }
+    scheduleTask([&, endpointKey, reason] {
+        int32_t cancelled = 0;
+        activeConnectionsCopy.resize(activeConnections.size());
+        std::copy(std::begin(activeConnections), std::end(activeConnections), std::begin(activeConnectionsCopy));
+        for (auto connection : activeConnectionsCopy) {
+            if (connection == nullptr || !connection->matchesMtProxyEndpointKey(endpointKey)) {
+                continue;
+            }
+            connection->cancelMtProxyEndpointAttempt(reason.c_str());
+            cancelled++;
+        }
+        if (LOGS_ENABLED) {
+            DEBUG_D("proxy_endpoint_cancel endpoint=%s reason=%s cancelled=%d active=%u", endpointKey.c_str(), reason.c_str(), cancelled, (uint32_t) activeConnections.size());
+        }
     });
 }
 

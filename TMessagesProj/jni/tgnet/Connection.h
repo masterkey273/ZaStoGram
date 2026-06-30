@@ -49,6 +49,7 @@ protected:
     void onDisconnected(int32_t reason, int32_t error) override;
     void onConnected() override;
     bool hasPendingRequests() override;
+    std::string proxyConnectionStageOrigin() override;
     void reconnect();
 
 private:
@@ -113,7 +114,7 @@ private:
     uint8_t encryptIv[16];
     uint32_t encryptNum;
     uint8_t encryptCount[16];
-    
+
     AES_KEY decryptKey;
     uint8_t decryptIv[16];
     uint32_t decryptNum;

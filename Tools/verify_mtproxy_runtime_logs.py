@@ -73,6 +73,12 @@ USABLE_HOLD_DECISIONS = {
     "held_by_usable_success",
     "held_by_current_proxy_usable",
     "shadowed_by_usable_success",
+    "shadowed_socket_failure",
+}
+TERMINAL_ONE_SHOT_PHASES = {
+    "unsupported_for_current_client",
+    "secret_parse_invalid_domain_control_char",
+    "secret_parse_invalid_domain",
 }
 PUNITIVE_ROTATION_PHASES = {
     "tcp_not_connected",
@@ -91,7 +97,7 @@ WARMUP_TCP_CONNECT_GATE_LIMIT = 5
 DNS_OUTAGE_HOLD_MS = 60 * 1000
 DNS_OUTAGE_PROVIDERS = {"system", "google_json_doh", "cloudflare_json_doh"}
 ROTATED_AWAY_HOLD_MS = 45 * 1000
-ROTATED_AWAY_ALLOWED_DECISIONS = {"ignored_rotated_away", "ignored_stale_endpoint"}
+ROTATED_AWAY_ALLOWED_DECISIONS = {"cancel_endpoint_attempts", "ignored_cancelled_generation", "ignored_rotated_away", "ignored_stale_endpoint"}
 
 
 def resolve_markers_path(path: Path) -> Path:
@@ -168,6 +174,16 @@ def verify_visible_success_hold(lines: list[str]) -> list[str]:
         if decision == "visible_usable_success" and phase in USABLE_SUCCESS_PROXY_PHASES:
             usable_successes.append((line_time_ms(line), endpoint, line))
             continue
+        if decision == "visible_only" and line_field(line, "source") == "proxy_check":
+            current_time = line_time_ms(line)
+            for success_time, _, success_line in usable_successes:
+                if success_time is not None and current_time is not None and current_time - success_time > VISIBLE_SUCCESS_HOLD_MS:
+                    continue
+                failures.append(
+                    "proxy-check/candidate event mirrored as active visible status after usable success: "
+                    f"{line} after {success_line}"
+                )
+                break
         if decision != "visible_only" or phase not in LIVE_VISIBLE_OVERWRITE_PHASES | FRESH_USABLE_FAILURE_OVERWRITE_PHASES:
             continue
         current_time = line_time_ms(line)
@@ -186,6 +202,72 @@ def verify_visible_success_hold(lines: list[str]) -> list[str]:
                 "visible usable success overwritten by live visible_only within 45s: "
                 f"{line} after {success_line}"
             )
+            break
+    return failures
+
+
+def verify_one_shot_terminal(lines: list[str]) -> list[str]:
+    failures: list[str] = []
+    terminal_seen: list[tuple[int | None, str, str, str]] = []
+    terminal_quarantine_seen: set[tuple[str, str]] = set()
+    cancellation_seen: set[tuple[str, str]] = set()
+    for line in lines:
+        decision = proxy_control_decision(line)
+        phase = line_field(line, "phase")
+        endpoint = line_field(line, "endpoint")
+        if phase in TERMINAL_ONE_SHOT_PHASES:
+            terminal_seen.append((line_time_ms(line), phase, endpoint, line))
+        if decision == "held_by_failure_hysteresis" and phase in TERMINAL_ONE_SHOT_PHASES:
+            failures.append(f"one-shot terminal phase must not wait in failure hysteresis: {line}")
+        if "proxy_rotation decision=waiting_hysteresis" in line and phase in TERMINAL_ONE_SHOT_PHASES:
+            failures.append(f"one-shot terminal phase must not wait in rotation hysteresis: {line}")
+        if decision == "backoff" and phase in TERMINAL_ONE_SHOT_PHASES and "rotation_allowed=false" in line:
+            failures.append(f"one-shot terminal backoff must allow immediate quarantine: {line}")
+        if decision == "terminal_quarantine" and phase in TERMINAL_ONE_SHOT_PHASES:
+            terminal_quarantine_seen.add((phase, endpoint))
+        if "cancel_endpoint_attempts" in line and phase in TERMINAL_ONE_SHOT_PHASES:
+            cancellation_seen.add((phase, endpoint))
+
+    for _, phase, endpoint, line in terminal_seen:
+        if not endpoint:
+            continue
+        if not any(item_phase == phase and same_proxy_endpoint(item_endpoint, endpoint) for item_phase, item_endpoint in terminal_quarantine_seen):
+            failures.append(f"one-shot terminal phase missing terminal_quarantine: {line}")
+        if not any(item_phase == phase and same_proxy_endpoint(item_endpoint, endpoint) for item_phase, item_endpoint in cancellation_seen):
+            failures.append(f"one-shot terminal phase missing cancel_endpoint_attempts: {line}")
+    return failures
+
+
+def verify_shadowed_socket_backoff(lines: list[str]) -> list[str]:
+    failures: list[str] = []
+    usable_successes: list[tuple[int | None, str, str]] = []
+    shadowed_post_handshake = False
+    for line in lines:
+        decision = proxy_control_decision(line)
+        phase = line_field(line, "phase")
+        endpoint = line_field(line, "endpoint")
+        if decision == "visible_usable_success" and phase in USABLE_SUCCESS_PROXY_PHASES:
+            usable_successes.append((line_time_ms(line), endpoint, line))
+            continue
+        if "shadowed_socket_failure" in line and "phase=post_handshake_no_appdata" in line:
+            shadowed_post_handshake = True
+            continue
+        if "reconnect_backoff_suppressed" in line and "phase=post_handshake_no_appdata" in line:
+            shadowed_post_handshake = True
+            continue
+        if "reconnect_backoff" not in line or "phase=post_handshake_no_appdata" not in line:
+            continue
+        current_time = line_time_ms(line)
+        for success_time, success_endpoint, success_line in usable_successes:
+            if endpoint and success_endpoint and not same_proxy_endpoint(success_endpoint, endpoint):
+                continue
+            if success_time is not None and current_time is not None and current_time - success_time > VISIBLE_SUCCESS_HOLD_MS:
+                continue
+            if not shadowed_post_handshake:
+                failures.append(
+                    "post_handshake_no_appdata created reconnect_backoff after fresh usable success; "
+                    f"use shadowed_socket_failure/reconnect_backoff_suppressed: {line} after {success_line}"
+                )
             break
     return failures
 
@@ -323,6 +405,9 @@ def verify_rotated_away_endpoint_hold(lines: list[str]) -> list[str]:
             rotation_triggers.append((line_time_ms(line), line_field(line, "endpoint"), line))
             continue
         decision = proxy_control_decision(line)
+        if decision == "terminal_quarantine":
+            rotation_triggers.append((line_time_ms(line), line_field(line, "endpoint"), line))
+            continue
         if not decision:
             continue
         endpoint = line_field(line, "endpoint")
@@ -507,6 +592,8 @@ def verify_lines(lines: list[str]) -> list[str]:
             failures.append(f"mtproxy_disconnect missing invariant fields {','.join(missing)}: {line}")
 
     failures.extend(verify_visible_success_hold(lines))
+    failures.extend(verify_one_shot_terminal(lines))
+    failures.extend(verify_shadowed_socket_backoff(lines))
     failures.extend(verify_usable_hold_anchor(lines))
     failures.extend(verify_dns_visible_debounce(lines))
     failures.extend(verify_rotation_hysteresis(lines))

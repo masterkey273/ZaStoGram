@@ -58,7 +58,7 @@ def java_cases(source: str, constants: dict[str, str]) -> set[str]:
     }
 
 
-def native_diagnostics(socket: str, socket_h: str, startup_timeline: str) -> set[str]:
+def native_diagnostics(socket: str, socket_h: str, startup_timeline: str, connection: str = "") -> set[str]:
     native_source = socket + "\n" + startup_timeline
     phases = set(re.findall(r'publishProxyConnectionStage\("([a-z0-9_]+)"\)', native_source))
     phases |= set(re.findall(r'proxyCheckDiagnostic\s*=\s*"([a-z0-9_]+)"', native_source))
@@ -66,6 +66,7 @@ def native_diagnostics(socket: str, socket_h: str, startup_timeline: str) -> set
     phases |= set(re.findall(r'closeMtProxyPostClientHelloResponse\("([a-z0-9_]+)"', socket))
     phases |= set(re.findall(r'if \(responseBytes [^}]+return "([a-z0-9_]+)"', socket))
     phases |= set(re.findall(r'proxyCheckDiagnostic\s*=\s*"([a-z0-9_]+)"', socket_h))
+    phases |= set(re.findall(r'mtproxy_startup (reconnect_backoff_suppressed)', connection))
     phases.discard("wss_tls_handshake")
     phases -= {
         "none",
@@ -132,7 +133,7 @@ def main() -> int:
         "ProxyPhasePolicy key scope must match contract network-key phases",
     )
     require(
-        native_diagnostics(socket, socket_h, startup_timeline) == native_phase_names(),
+        native_diagnostics(socket, socket_h, startup_timeline, connection) == native_phase_names(),
         "native MTProxy diagnostics must match contract native phases",
     )
     require(

@@ -86,6 +86,7 @@ public:
     static bool useCachedHostAddress(const std::string &dnsCacheKey, int64_t now, std::string *cachedIpv4);
     static void storeResolvedAddress(const std::string &dnsCacheKey, const std::string &ip, int64_t now);
     static FailureResult recordFailure(const MtProxyEndpointContext &context, const std::string &phase, int64_t now);
+    static int64_t freshDataPathSuccessRemainingMs(const MtProxyEndpointContext &context, int64_t now);
     static void recordHandshakeOk(const MtProxyEndpointContext &context, const char *reason);
     static DataPathSuccessResult recordDataPathSuccess(const MtProxyEndpointContext &context, const char *reason, int64_t now);
     static bool recordSecretDomainSanitized(const std::string &endpointKey);

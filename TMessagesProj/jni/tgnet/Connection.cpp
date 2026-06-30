@@ -123,6 +123,10 @@ static uint32_t mtProxyNextReconnectBackoffMs(ConnectionType type, uint32_t prev
     return delay + mtProxyReconnectJitterMs(std::min(delay / 4, 2000U));
 }
 
+std::string Connection::proxyConnectionStageOrigin() {
+    return ((int32_t) connectionType & 0x0000ffff) == ConnectionTypeProxy ? "proxy_check" : "active_proxy";
+}
+
 Connection::Connection(Datacenter *datacenter, ConnectionType type, int8_t num) : ConnectionSession(datacenter->instanceNum), ConnectionSocket(datacenter->instanceNum) {
     currentDatacenter = datacenter;
     connectionNum = num;
@@ -820,6 +824,12 @@ void Connection::onDisconnectedInternal(int32_t reason, int32_t error) {
         if (LOGS_ENABLED) DEBUG_D("connection(%p, account%u, dc%u, type %d) mtproxy_startup reconnect_backoff phase=%s delay_ms=%u failed=%u", this, currentDatacenter->instanceNum, currentDatacenter->getDatacenterId(), connectionType, mtProxyReconnectDiagnostic, mtProxyReconnectDelay, failedConnectionCount + 1);
     } else if (connectionState == TcpConnectionStageIdle && connectionType != ConnectionTypeProxy && isProxyCloseDiagnosticSuppressed() && mtProxyDiagnosticNeedsReconnectBackoff(mtProxyReconnectDiagnostic)) {
         if (LOGS_ENABLED) DEBUG_D("connection(%p, account%u, dc%u, type %d) mtproxy_startup reconnect_backoff_suppressed phase=%s", this, currentDatacenter->instanceNum, currentDatacenter->getDatacenterId(), connectionType, mtProxyReconnectDiagnostic);
+    }
+    if (strcmp(mtProxyReconnectDiagnostic, "ignored_cancelled_generation") == 0) {
+        waitForReconnectTimer = false;
+        usefullData = false;
+        if (LOGS_ENABLED) DEBUG_D("connection(%p, account%u, dc%u, type %d) mtproxy_startup reconnect_cancelled_generation", this, currentDatacenter->instanceNum, currentDatacenter->getDatacenterId(), connectionType);
+        return;
     }
 
     uint32_t datacenterId = currentDatacenter->getDatacenterId();

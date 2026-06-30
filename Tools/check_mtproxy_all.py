@@ -43,6 +43,7 @@ CHECKS = [
     "check_proxy_ui_messages.py",
     "check_proxy_check_scheduler.py",
     "check_proxy_check_lifecycle.py",
+    "check_mtproxy_control_plane_one_pass.py",
     "check_mtproxy_analyzer.py",
 ]
 

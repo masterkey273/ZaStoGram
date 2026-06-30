@@ -510,6 +510,19 @@ MtProxyEndpointPolicy::FailureResult MtProxyEndpointPolicy::recordFailure(const 
     return result;
 }
 
+int64_t MtProxyEndpointPolicy::freshDataPathSuccessRemainingMs(const MtProxyEndpointContext &context, int64_t now) {
+    int64_t remainingMs = 0;
+    pthread_mutex_lock(&mtProxyEndpointPolicyMutex);
+    remainingMs = std::max(remainingMs, usableSuccessRemainingMsLocked(context.networkEndpointKey, now));
+    remainingMs = std::max(remainingMs, usableSuccessRemainingMsLocked(context.endpointKey, now));
+    std::string recipeKey = context.recipeCacheKey.empty() ? context.endpointKey : context.recipeCacheKey;
+    if (context.fakeTls && !recipeKey.empty()) {
+        remainingMs = std::max(remainingMs, usableSuccessRemainingMsLocked(recipeKey, now));
+    }
+    pthread_mutex_unlock(&mtProxyEndpointPolicyMutex);
+    return remainingMs;
+}
+
 void MtProxyEndpointPolicy::recordHandshakeOk(const MtProxyEndpointContext &context, const char *reason) {
     if (reason == nullptr || strcmp(reason, "server_hello_hmac_ok") != 0 || context.networkEndpointKey.empty()) {
         return;

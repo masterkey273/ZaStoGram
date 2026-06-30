@@ -4618,8 +4618,49 @@ void ConnectionSocket::publishProxyConnectionStage(const char *diagnostic) {
     }
     ConnectionsManager &manager = ConnectionsManager::getInstance(instanceNum);
     if (manager.delegate != nullptr) {
-        manager.delegate->onProxyConnectionStageChanged(instanceNum, diagnostic, endpointKey);
+        manager.delegate->onProxyConnectionStageChanged(instanceNum, diagnostic, endpointKey, proxyConnectionStageOrigin());
     }
+}
+
+std::string ConnectionSocket::proxyConnectionStageOrigin() {
+    return "active_proxy";
+}
+
+bool ConnectionSocket::matchesMtProxyEndpointKey(const std::string &endpointKey) {
+    if (endpointKey.empty() || !isCurrentMtProxyConnection()) {
+        return false;
+    }
+    if (endpointKey == currentMtProxyEndpointKey || endpointKey == currentMtProxyNetworkEndpointKey) {
+        return true;
+    }
+    if (!currentMtProxyEndpointKey.empty()
+            && currentMtProxyEndpointKey.size() > endpointKey.size()
+            && currentMtProxyEndpointKey.compare(0, endpointKey.size(), endpointKey) == 0
+            && currentMtProxyEndpointKey[endpointKey.size()] == ':') {
+        return true;
+    }
+    return !currentMtProxyNetworkEndpointKey.empty()
+            && endpointKey.size() > currentMtProxyNetworkEndpointKey.size()
+            && endpointKey.compare(0, currentMtProxyNetworkEndpointKey.size(), currentMtProxyNetworkEndpointKey) == 0
+            && endpointKey[currentMtProxyNetworkEndpointKey.size()] == ':';
+}
+
+void ConnectionSocket::cancelMtProxyEndpointAttempt(const char *reason) {
+    if (!isCurrentMtProxyConnection()) {
+        return;
+    }
+    const char *safeReason = reason != nullptr && reason[0] != '\0' ? reason : "unknown";
+    proxyCheckDiagnostic = "ignored_cancelled_generation";
+    proxyCloseDiagnosticSuppressed = true;
+    suppressNextProxyCloseDiagnostic = true;
+    publishProxyConnectionStage("ignored_cancelled_generation");
+    if (LOGS_ENABLED) {
+        DEBUG_D("connection(%p) mtproxy_startup endpoint_attempt_cancelled endpoint=%s network_key=%s reason=%s", this, currentMtProxyEndpointKey.c_str(), currentMtProxyNetworkEndpointKey.c_str(), safeReason);
+    }
+    releaseMtProxyEndpointTcpConnect("endpoint_attempt_cancelled");
+    releaseProxyHandshakeAdmission(false, "endpoint_attempt_cancelled");
+    cancelProxyHandshakeAdmission();
+    closeSocket(1, ECANCELED);
 }
 
 void ConnectionSocket::markMtProxyFirstPlainDataSent(uint32_t bytes) {
@@ -4710,7 +4751,9 @@ void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
     checkCloseSocketAction("closeSocket");
     setTransportState(TransportState::Closing, "closeSocket");
     setSocketCloseNotified(true, "closeSocket");
-    proxyCloseDiagnosticSuppressed = false;
+    bool forcedSuppressProxyCloseDiagnostic = suppressNextProxyCloseDiagnostic;
+    suppressNextProxyCloseDiagnostic = false;
+    proxyCloseDiagnosticSuppressed = forcedSuppressProxyCloseDiagnostic;
     if (reason != 0
             && isCurrentMtProxyConnection()
             && proxyCheckDiagnostic == "dropped_after_appdata"
@@ -4719,11 +4762,29 @@ void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
         proxyCheckDiagnostic = "dropped_early_after_appdata";
     }
     std::string terminalDiagnostic = deriveMtProxyTerminalDiagnostic(reason, error);
-    if (reason != 0 && isCurrentMtProxyConnection()) {
+    if (!forcedSuppressProxyCloseDiagnostic && reason != 0 && isCurrentMtProxyConnection()) {
         proxyCheckDiagnostic = terminalDiagnostic;
     }
     bool suppressProxyCloseDiagnostic = false;
-    if (reason != 0 && isCurrentMtProxyConnection()) {
+    if (forcedSuppressProxyCloseDiagnostic) {
+        suppressProxyCloseDiagnostic = true;
+    }
+    bool shadowedSocketFailure = false;
+    int64_t shadowedSocketFailureHoldMs = 0;
+    if (!forcedSuppressProxyCloseDiagnostic && reason != 0 && isCurrentMtProxyConnection()) {
+        if (terminalDiagnostic == "post_handshake_no_appdata") {
+            MtProxyEndpointPolicy::MtProxyEndpointContext context;
+            context.endpointKey = currentMtProxyEndpointKey;
+            context.recipeCacheKey = currentMtProxyRecipeCacheKey;
+            context.networkEndpointKey = currentMtProxyNetworkEndpointKey;
+            context.fakeTls = currentSecretIsFakeTls;
+            int64_t now = ConnectionsManager::getInstance(instanceNum).getCurrentTimeMonotonicMillis();
+            shadowedSocketFailureHoldMs = MtProxyEndpointPolicy::freshDataPathSuccessRemainingMs(context, now);
+            if (shadowedSocketFailureHoldMs > 0) {
+                suppressProxyCloseDiagnostic = true;
+                shadowedSocketFailure = true;
+            }
+        }
         if (proxyCheckDiagnostic == "post_handshake_no_appdata"
                 && !mtproxyFirstTlsFrameSentLogged
                 && !mtproxyFirstPlainDataSentLogged) {
@@ -4736,6 +4797,10 @@ void ConnectionSocket::closeSocket(int32_t reason, int32_t error) {
     if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_disconnect reason=%d reason_text=%s error=%d error_text=%s secret_kind=%s is_faketls=%d is_wss=%d transport_state=%s epoll_registered=%d admission_active=%d admission_queued=%d tcp_gate_active=%d waiting_resolve=%d proxy_state=%d tls_state=%d bytes_read=%zu pending_hello=%u/%u pending=%u/%u first_tls_sent=%d first_tls_recv=%d first_plain_sent=%d first_plain_recv=%d tls_frames_completed=%u", this, reason, mtProxyDisconnectReasonName(reason), error, mtProxySocketErrorName(error), currentSecretKind, currentSecretIsFakeTls ? 1 : 0, currentTransportWss ? 1 : 0, transportStateName(currentTransportState), epollRegistered ? 1 : 0, proxyHandshakeAdmissionActive ? 1 : 0, proxyHandshakeAdmissionQueued ? 1 : 0, proxyEndpointTcpConnectActive ? 1 : 0, waitingForHostResolve.empty() ? 0 : 1, (int) proxyAuthState, (int) tlsState, bytesRead, pendingClientHelloOffset, pendingClientHelloSize, pendingTlsFrameOffset, pendingTlsFrameSize, mtproxyFirstTlsFrameSentLogged ? 1 : 0, mtproxyFirstTlsDataReceivedLogged ? 1 : 0, mtproxyFirstPlainDataSentLogged ? 1 : 0, mtproxyFirstPlainDataReceivedLogged ? 1 : 0, mtproxyTlsFrameCompletedCount);
     if (suppressProxyCloseDiagnostic) {
         proxyCloseDiagnosticSuppressed = true;
+        if (shadowedSocketFailure) {
+            publishProxyConnectionStage("shadowed_socket_failure");
+            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup shadowed_socket_failure phase=%s hold_ms=%ld endpoint=%s network_key=%s", this, proxyCheckDiagnostic.c_str(), (long) shadowedSocketFailureHoldMs, currentMtProxyEndpointKey.c_str(), currentMtProxyNetworkEndpointKey.c_str());
+        }
         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup close_diagnostic_suppressed phase=%s reason=%s first_tls_sent=%d first_tls_recv=%d first_plain_sent=%d first_plain_recv=%d", this, proxyCheckDiagnostic.c_str(), mtProxyDisconnectReasonName(reason), mtproxyFirstTlsFrameSentLogged ? 1 : 0, mtproxyFirstTlsDataReceivedLogged ? 1 : 0, mtproxyFirstPlainDataSentLogged ? 1 : 0, mtproxyFirstPlainDataReceivedLogged ? 1 : 0);
     } else {
         rotateMtProxyTlsProfileOnFailureIfNeeded(reason, error);

@@ -50,6 +50,7 @@ protected:
     void resetLastEventTime();
     bool hasTlsHashMismatch();
     void publishProxyConnectionStage(const char *diagnostic);
+    virtual std::string proxyConnectionStageOrigin();
     void markMtProxyFirstPlainDataSent(uint32_t bytes);
     void markMtProxyFirstPlainDataReceived(uint32_t bytes);
     virtual void onReceivedData(NativeByteBuffer *buffer) = 0;
@@ -72,9 +73,12 @@ private:
 
     ConnectionSocketStateMachine stateMachine;
     bool wssUsedRelayFallback = false;
+    bool suppressNextProxyCloseDiagnostic = false;
 
     int32_t checkSocketError(int32_t *error);
     void closeSocket(int32_t reason, int32_t error);
+    bool matchesMtProxyEndpointKey(const std::string &endpointKey);
+    void cancelMtProxyEndpointAttempt(const char *reason);
     bool resetTransportSocketForOpenConnection();
     void openConnectionInternal(bool ipv6);
     void queueAdjustWriteOpAfterOutboundAppend(const char *reason);

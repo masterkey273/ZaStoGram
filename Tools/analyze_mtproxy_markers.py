@@ -91,7 +91,14 @@ FAKETLS_FAILURE_VERDICTS = {
     "dropped_early_after_appdata",
     "dropped_after_appdata",
 }
-NON_FAILURE_VERDICTS = {"ok", "handshake_ok_no_appdata_sent", "shadowed_by_usable_success"}
+NON_FAILURE_VERDICTS = {
+    "ok",
+    "handshake_ok_no_appdata_sent",
+    "shadowed_by_usable_success",
+    "shadowed_socket_failure",
+    "ignored_cancelled_generation",
+    "reconnect_backoff_suppressed",
+}
 
 
 def event_marker_matches(text: str, needle: str) -> bool:
@@ -364,6 +371,9 @@ class Attempt:
             "resolved_sslip": "resolved_sslip",
             "phase_adaptive_recipe": "phase_adaptive_recipe",
             "endpoint_failure_shadowed_by_success": "endpoint_failure_shadowed_by_success",
+            "shadowed_socket_failure": "shadowed_socket_failure",
+            "ignored_cancelled_generation": "ignored_cancelled_generation",
+            "endpoint_attempt_cancelled": "ignored_cancelled_generation",
             "endpoint_failure_skipped_local": "endpoint_failure_skipped_local",
             "endpoint_failure": "endpoint_failure",
             "endpoint_handshake_ok": "endpoint_handshake_ok",
@@ -1769,6 +1779,9 @@ def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     print("- phase_adaptive_recipe: client changed the next FakeTLS startup recipe after a phase-specific failure.")
     print("- recipe_failed: current FakeTLS recipe failed and the next attempt should move along the recipe ladder, not mark the endpoint bad yet.")
     print("- shadowed_by_usable_success: a late sibling startup failure was ignored because this endpoint recently delivered app-data.")
+    print("- shadowed_socket_failure: native suppressed a sibling socket failure because the endpoint recently delivered app-data.")
+    print("- ignored_cancelled_generation: late native callbacks were ignored after terminal endpoint cancellation advanced the generation.")
+    print("- reconnect_backoff_suppressed: native closed a socket without adding endpoint reconnect backoff.")
     print("- telemetry_only: Java kept per-connection DNS telemetry out of the visible proxy status.")
     print("- visible_delayed_dns: Java showed DNS only after the DNS telemetry stayed unresolved past the debounce window.")
     print("- held_by_usable_success: Java control-plane kept the current proxy after fresh app-data success.")
