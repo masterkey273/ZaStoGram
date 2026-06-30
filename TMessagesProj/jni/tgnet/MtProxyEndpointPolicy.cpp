@@ -4,6 +4,7 @@
  */
 
 #include "MtProxyEndpointPolicy.h"
+#include "MtProxyPhaseContract.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -79,19 +80,19 @@ static uint32_t endpointSecureRandomBounded(uint32_t bound) {
 
 static int64_t cooldownMs(MtProxyEndpointResilienceState &state, const std::string &diagnostic, int32_t mode, int32_t priority) {
     mode = normalizeMtProxyConnectionPatternOption(mode);
-    if (diagnostic == "secret_parse_invalid_domain_control_char" || diagnostic == "secret_parse_invalid_domain") {
+    if (diagnostic == MtProxyPhase::SecretParseInvalidDomainControlChar || diagnostic == MtProxyPhase::SecretParseInvalidDomain) {
         return MT_PROXY_ENDPOINT_INVALID_SECRET_COOLDOWN_MIN_MS + endpointSecureRandomBounded((uint32_t) MT_PROXY_ENDPOINT_INVALID_SECRET_COOLDOWN_JITTER_MS);
     }
     int32_t penalty = 1;
-    bool networkFailure = diagnostic == "host_resolve_failed" || diagnostic == "host_resolve_timeout" || diagnostic == "tcp_not_connected";
+    bool networkFailure = diagnostic == "host_resolve_failed" || diagnostic == "host_resolve_timeout" || diagnostic == MtProxyPhase::TcpNotConnected;
     if (diagnostic == "host_resolve_failed" || diagnostic == "host_resolve_timeout") {
         penalty = ++state.hostResolveFailures;
         state.tcpFailures = 0;
-    } else if (diagnostic == "tcp_not_connected") {
+    } else if (diagnostic == MtProxyPhase::TcpNotConnected) {
         penalty = ++state.tcpFailures;
     } else if (diagnostic == "mtproxy_packet_sent_no_response" || diagnostic == "tcp_connected_no_pong") {
         penalty = ++state.plainNoResponseFailures;
-    } else if (diagnostic == "post_handshake_no_appdata" || diagnostic == "dropped_early_after_appdata") {
+    } else if (diagnostic == MtProxyPhase::PostHandshakeNoAppdata || diagnostic == "dropped_early_after_appdata") {
         penalty = ++state.postHandshakeFailures;
     } else {
         penalty = ++state.handshakeFailures;
@@ -153,7 +154,7 @@ static bool failureCanBeShadowedBySuccess(const std::string &diagnostic) {
     }
     return diagnostic == "host_resolve_failed"
             || diagnostic == "host_resolve_timeout"
-            || diagnostic == "tcp_not_connected"
+            || diagnostic == MtProxyPhase::TcpNotConnected
             || diagnostic == "tcp_connected_no_pong"
             || diagnostic == "true_client_hello_timeout"
             || diagnostic == "client_hello_sent_no_server_hello"
@@ -161,10 +162,10 @@ static bool failureCanBeShadowedBySuccess(const std::string &diagnostic) {
             || diagnostic == "short_tls_response_after_client_hello"
             || diagnostic == "unrecognized_response_after_client_hello"
             || diagnostic == "unrecognized_tls_response_after_client_hello"
-            || diagnostic == "server_hello_hmac_mismatch"
-            || diagnostic == "handshake_profiles_exhausted"
+            || diagnostic == MtProxyPhase::ServerHelloHmacMismatch
+            || diagnostic == MtProxyPhase::HandshakeProfilesExhausted
             || diagnostic == "mtproxy_packet_sent_no_response"
-            || diagnostic == "post_handshake_no_appdata";
+            || diagnostic == MtProxyPhase::PostHandshakeNoAppdata;
 }
 
 static int64_t usableSuccessRemainingMsLocked(const std::string &key, int64_t now) {
@@ -243,7 +244,7 @@ std::string MtProxyEndpointPolicy::dnsCacheKeyFor(const std::string &host, uint1
 std::string MtProxyEndpointPolicy::stateKeyForPhase(const std::string &phase, const std::string &networkEndpointKey, const std::string &endpointKey) {
     if ((phase == "host_resolve_failed"
             || phase == "host_resolve_timeout"
-            || phase == "tcp_not_connected"
+            || phase == MtProxyPhase::TcpNotConnected
             || phase == "tcp_connected_no_pong"
             || phase == "dropped_early_after_appdata")
             && !networkEndpointKey.empty()) {
@@ -258,13 +259,13 @@ std::string MtProxyEndpointPolicy::stateKeyForPhase(const std::string &phase, co
 bool MtProxyEndpointPolicy::failureNeedsCooldown(const std::string &diagnostic) {
     return diagnostic == "host_resolve_failed"
            || diagnostic == "host_resolve_timeout"
-           || diagnostic == "tcp_not_connected"
+           || diagnostic == MtProxyPhase::TcpNotConnected
            || diagnostic == "tcp_connected_no_pong"
-           || diagnostic == "secret_parse_invalid_domain_control_char"
-           || diagnostic == "secret_parse_invalid_domain"
-           || diagnostic == "handshake_profiles_exhausted"
+           || diagnostic == MtProxyPhase::SecretParseInvalidDomainControlChar
+           || diagnostic == MtProxyPhase::SecretParseInvalidDomain
+           || diagnostic == MtProxyPhase::HandshakeProfilesExhausted
            || diagnostic == "mtproxy_packet_sent_no_response"
-           || diagnostic == "post_handshake_no_appdata"
+           || diagnostic == MtProxyPhase::PostHandshakeNoAppdata
            || diagnostic == "dropped_early_after_appdata";
 }
 

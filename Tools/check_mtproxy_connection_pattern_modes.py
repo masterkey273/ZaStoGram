@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 import sys
 
 from mtproxy_phase_contract import reconnect_backoff_phases
@@ -19,6 +20,7 @@ MANAGER_H = ROOT / "TMessagesProj/jni/tgnet/ConnectionsManager.h"
 PROXY_CHECK = ROOT / "TMessagesProj/jni/tgnet/ProxyCheckInfo.h"
 STRINGS = ROOT / "TMessagesProj/src/main/res/values/strings.xml"
 STRINGS_RU = ROOT / "TMessagesProj/src/main/res/values-ru/strings.xml"
+NATIVE_PHASE_CONTRACT = ROOT / "TMessagesProj/jni/tgnet/MtProxyPhaseContract.h"
 
 
 def text(path: Path) -> str:
@@ -29,6 +31,19 @@ def require(condition: bool, message: str) -> None:
     if not condition:
         print(f"FAIL: {message}", file=sys.stderr)
         sys.exit(1)
+
+
+def native_phase_constants() -> dict[str, str]:
+    contract = text(NATIVE_PHASE_CONTRACT)
+    return {
+        value: name
+        for name, value in re.findall(r'constexpr const char \*([A-Za-z0-9_]+)\s*=\s*"([a-z0-9_]+)"', contract)
+    }
+
+
+def has_phase(source: str, phase: str, constants: dict[str, str]) -> bool:
+    constant = constants.get(phase)
+    return f'"{phase}"' in source or (constant is not None and f"MtProxyPhase::{constant}" in source)
 
 
 def main() -> None:
@@ -43,6 +58,7 @@ def main() -> None:
     manager_cpp = text(MANAGER_CPP)
     manager_h = text(MANAGER_H)
     proxy_check = text(PROXY_CHECK)
+    phase_constants = native_phase_constants()
 
     for name in ("OFF", "SOFT", "BROWSER", "QUIET", "STRICT"):
         require(
@@ -204,7 +220,7 @@ def main() -> None:
     expected_reconnect_backoff = reconnect_backoff_phases()
     require(
         "mtProxyDiagnosticNeedsReconnectBackoff" in connection_cpp
-        and all(f'"{phase}"' in reconnect_backoff for phase in expected_reconnect_backoff)
+        and all(has_phase(reconnect_backoff, phase, phase_constants) for phase in expected_reconnect_backoff)
         and "mtproxy_startup reconnect_backoff" in connection_cpp
         and "mtproxy_startup reconnect_hold" in connection_cpp
         and "getProxyCheckDiagnostic()" in connection_cpp

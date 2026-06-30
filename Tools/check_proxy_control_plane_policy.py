@@ -60,6 +60,25 @@ def phase_return(policy: str, constant: str) -> str:
     return search_text[end:semicolon + 1] if semicolon != -1 else search_text[end:]
 
 
+def method_body(source: str, signature: str) -> str:
+    start = source.find(signature)
+    if start == -1:
+        return ""
+    brace = source.find("{", start)
+    if brace == -1:
+        return ""
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    return source[start:]
+
+
 def main() -> int:
     failures: list[str] = []
 
@@ -99,6 +118,15 @@ def main() -> int:
     require(policy, "FIRST_TLS_APP_RECV", "ProxyPhasePolicy must treat first TLS app recv as usable success", failures)
     require(policy, "FIRST_MTPROXY_PACKET_RECV", "ProxyPhasePolicy must treat first MTProxy packet recv as usable success", failures)
     require(policy, "SERVER_HELLO_HMAC_OK", "ProxyPhasePolicy must explicitly classify server hello as handshake only", failures)
+    one_shot_terminal = method_body(policy, "public static boolean isOneShotTerminal")
+    handshake_profiles_decision = phase_return(policy, "HANDSHAKE_PROFILES_EXHAUSTED")
+    if "failure(KeyScope.EXACT, true, true)" not in handshake_profiles_decision or "terminalExactFailure()" in handshake_profiles_decision:
+        failures.append("handshake_profiles_exhausted must remain a recoverable exact failure, not terminalExactConfig")
+    if "case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:" in one_shot_terminal:
+        failures.append("handshake_profiles_exhausted must not be isOneShotTerminal in Java")
+    for phase in ("SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR", "SECRET_PARSE_INVALID_DOMAIN"):
+        if f"case ProxyCheckDiagnostics.{phase}:" not in one_shot_terminal:
+            failures.append(f"{phase.lower()} must remain isOneShotTerminal in Java")
     require(diagnostics, "BACKGROUND_HANDSHAKE_ABORTED", "ProxyCheckDiagnostics must expose background/screen-off FakeTLS aborts", failures)
     for phase in (
         "CONNECTION_NOT_STARTED",

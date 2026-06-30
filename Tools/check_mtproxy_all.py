@@ -50,6 +50,17 @@ CHECKS = [
     "check_mtproxy_analyzer.py",
 ]
 
+STAGE1_FREEZE_CHECKS = {
+    "check_mtproxy_compatibility_recipe.py",
+    "check_mtproxy_probe_coordinator.py",
+    "check_proxy_control_plane_policy.py",
+    "check_proxy_rotation_behavior.py",
+}
+
+STAGE1_EXTRACTION_CHECKS = {
+    "check_mtproxy_faketls_path.py",
+}
+
 
 def validate_check_list() -> None:
     expected = {
@@ -73,6 +84,18 @@ def validate_check_list() -> None:
             print("Stale MTProxy checks in check_mtproxy_all.py:", file=sys.stderr)
             for check in stale:
                 print(f" - {check}", file=sys.stderr)
+        raise SystemExit(1)
+    missing_freeze = sorted(STAGE1_FREEZE_CHECKS - configured)
+    if missing_freeze:
+        print("Missing Stage 1 freeze checks in check_mtproxy_all.py:", file=sys.stderr)
+        for check in missing_freeze:
+            print(f" - {check}", file=sys.stderr)
+        raise SystemExit(1)
+    missing_extraction = sorted(STAGE1_EXTRACTION_CHECKS - configured)
+    if missing_extraction:
+        print("Missing Stage 1 extraction checks in check_mtproxy_all.py:", file=sys.stderr)
+        for check in missing_extraction:
+            print(f" - {check}", file=sys.stderr)
         raise SystemExit(1)
 
 

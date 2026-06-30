@@ -376,6 +376,20 @@ def main() -> int:
         "ProxyPhasePolicy must explicitly split punitive failures from local/live non-punitive telemetry",
         failures,
     )
+    punitive_body = method_body(policy, "public static boolean isPunitiveFailure")
+    one_shot_terminal_body = method_body(policy, "public static boolean isOneShotTerminal")
+    require(
+        "case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:" in punitive_body
+        and "case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:" not in one_shot_terminal_body,
+        "handshake_profiles_exhausted must rotate through punitive hysteresis, not one-shot terminal handling",
+        failures,
+    )
+    require(
+        "case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:" in one_shot_terminal_body
+        and "case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN:" in one_shot_terminal_body,
+        "invalid secret/domain phases must remain one-shot terminal",
+        failures,
+    )
     for phase in NON_PUNITIVE_ROTATION_PHASES:
         require(
             phase.upper() in policy

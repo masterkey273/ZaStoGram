@@ -198,6 +198,7 @@ add_library(tgnet STATIC
         tgnet/MtProxyAdaptivePolicy.cpp
         tgnet/MtProxyEndpointPolicy.cpp
         tgnet/MtProxyProbeCoordinator.cpp
+        tgnet/MtProxySecretDomain.cpp
         tgnet/MtProxyStartupTimeline.cpp
         tgnet/WssTransport.cpp
         tgnet/Datacenter.cpp

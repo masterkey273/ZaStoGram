@@ -177,7 +177,12 @@ def main() -> int:
         require(phase in phase_contract, f"phase contract must include {phase}", failures)
         require(phase in analyzer, f"analyzer must understand {phase}", failures)
     require("if (proxyAuthState == 11 && proxyHandshakeClientHelloSentTime != 0 && bytesRead == 0)" in socket_cpp and "server_closed_after_client_hello" in socket_cpp, "EOF after ClientHello with zero bytes must become server_closed_after_client_hello", failures)
-    require("proxyCheckDiagnostic = \"faketls_server_hello_wait_timeout\"" in socket_cpp, "no-byte ServerHello deadline must use faketls_server_hello_wait_timeout", failures)
+    require(
+        "proxyCheckDiagnostic = \"faketls_server_hello_wait_timeout\"" in socket_cpp
+        or "proxyCheckDiagnostic = MtProxyPhase::FaketlsServerHelloWaitTimeout" in socket_cpp,
+        "no-byte ServerHello deadline must use faketls_server_hello_wait_timeout",
+        failures,
+    )
     require("true_client_hello_timeout" in analyzer and "legacy alias" in analyzer, "analyzer must keep true_client_hello_timeout only as a legacy alias", failures)
 
     require("probeKey" in event and "probeKey" in wrapper and "probeKey" in runtime, "native stage events must carry probeKey through Java runtime", failures)
@@ -185,6 +190,13 @@ def main() -> int:
     require("cancelProxyEndpointAttempts" in manager_h and "probeKey" in manager_cpp, "native cancellation must match both endpointKey and probeKey", failures)
     require("matchesMtProxyProbeKey" in socket_h and "matchesMtProxyProbeKey" in socket_cpp, "ConnectionSocket must match cancellation by probeKey", failures)
     require("handshake_profiles_exhausted" in verifier and "probeKey" in verifier, "runtime verifier must understand profile exhaustion as a probe-keyed recovery failure", failures)
+    require(
+        "next=unsupported_for_current_client" not in socket_cpp
+        and 'proxyCheckDiagnostic = "unsupported_for_current_client"' not in socket_cpp
+        and 'publishProxyConnectionStage("unsupported_for_current_client")' not in socket_cpp,
+        "ConnectionSocket must not publish unsupported_for_current_client from recipe exhaustion",
+        failures,
+    )
 
     # --- Commit 1: bounded PROBING lifetime + recipe-progress self-connect budget + reaper (liveness) ---
     require(

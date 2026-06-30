@@ -14,6 +14,7 @@ PROBE_COORDINATOR = ROOT / "TMessagesProj/jni/tgnet/MtProxyProbeCoordinator.cpp"
 PROBE_COORDINATOR_H = ROOT / "TMessagesProj/jni/tgnet/MtProxyProbeCoordinator.h"
 ADAPTIVE_POLICY = ROOT / "TMessagesProj/jni/tgnet/MtProxyAdaptivePolicy.cpp"
 ADAPTIVE_POLICY_H = ROOT / "TMessagesProj/jni/tgnet/MtProxyAdaptivePolicy.h"
+SECRET_DOMAIN = ROOT / "TMessagesProj/jni/tgnet/MtProxySecretDomain.cpp"
 STATE_MACHINE_H = ROOT / "TMessagesProj/jni/tgnet/ConnectionSocketStateMachine.h"
 DIAGNOSTICS = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyCheckDiagnostics.java"
 PHASE_POLICY = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyPhasePolicy.java"
@@ -25,6 +26,7 @@ ANALYZER = ROOT / "Tools/analyze_mtproxy_markers.py"
 CHECK_ALL = ROOT / "Tools/check_mtproxy_all.py"
 STRINGS = ROOT / "TMessagesProj/src/main/res/values/strings.xml"
 STRINGS_RU = ROOT / "TMessagesProj/src/main/res/values-ru/strings.xml"
+NATIVE_PHASE_CONTRACT = ROOT / "TMessagesProj/jni/tgnet/MtProxyPhaseContract.h"
 
 RECIPE_FAILURES = {
     "true_client_hello_timeout",
@@ -41,6 +43,12 @@ LEGACY_OR_JAVA_ONLY_RECIPE_FAILURES = {
     "true_client_hello_timeout",
     "client_hello_sent_no_server_hello",
     "unrecognized_tls_response_after_client_hello",
+}
+NO_BYTE_AFTER_CLIENT_HELLO_FAILURES = {
+    "true_client_hello_timeout",
+    "faketls_server_hello_wait_timeout",
+    "server_closed_after_client_hello",
+    "client_hello_sent_no_server_hello",
 }
 
 
@@ -61,6 +69,18 @@ def block(source: str, start: str, end: str) -> str:
     return source[start_index:end_index if end_index >= 0 else len(source)]
 
 
+def native_phase_constants(contract_h: str) -> dict[str, str]:
+    return {
+        value: name
+        for name, value in re.findall(r'constexpr const char \*([A-Za-z0-9_]+)\s*=\s*"([a-z0-9_]+)"', contract_h)
+    }
+
+
+def has_phase(source: str, phase: str, native_constants: dict[str, str]) -> bool:
+    constant = native_constants.get(phase)
+    return f'"{phase}"' in source or (constant is not None and f"MtProxyPhase::{constant}" in source)
+
+
 def main() -> int:
     failures: list[str] = []
     socket = read(SOCKET)
@@ -70,6 +90,7 @@ def main() -> int:
     probe_coordinator_h = read(PROBE_COORDINATOR_H)
     adaptive_policy = read(ADAPTIVE_POLICY)
     adaptive_policy_h = read(ADAPTIVE_POLICY_H)
+    secret_domain = read(SECRET_DOMAIN)
     state_machine_h = read(STATE_MACHINE_H)
     diagnostics = read(DIAGNOSTICS)
     phase_policy = read(PHASE_POLICY)
@@ -81,6 +102,7 @@ def main() -> int:
     check_all = read(CHECK_ALL)
     strings = read(STRINGS)
     strings_ru = read(STRINGS_RU)
+    native_constants = native_phase_constants(read(NATIVE_PHASE_CONTRACT))
 
     for phase in RECIPE_FAILURES | {"handshake_profiles_exhausted", "secret_parse_invalid_domain_control_char", "secret_parse_invalid_domain"}:
         require(phase in java_phase_names(), f"phase contract must expose Java phase {phase}", failures)
@@ -126,8 +148,8 @@ def main() -> int:
         failures,
     )
     require(
-        'proxyCheckDiagnostic = "faketls_server_hello_wait_timeout"' in socket
-        and 'proxyCheckDiagnostic = "server_closed_after_client_hello"' in socket
+        has_phase(socket, "faketls_server_hello_wait_timeout", native_constants)
+        and has_phase(socket, "server_closed_after_client_hello", native_constants)
         and "bytesRead == 0" in block(socket, "void ConnectionSocket::markProxyHandshakeFreezeIfNeeded", "void ConnectionSocket::markProxyServerHelloHmacTimeoutIfNeeded"),
         "ServerHello wait must split no-byte deadline from EOF-after-ClientHello instead of publishing true_client_hello_timeout",
         failures,
@@ -145,11 +167,11 @@ def main() -> int:
         require(phase in recipe_body, f"native probe coordinator must treat {phase} as a recipe failure", failures)
         require(phase in adaptive_recipe_body, f"native adaptive policy nextCursor() must also treat {phase} as a recipe failure, or the ladder walk silently no-ops and fake-exhausts on the first attempt", failures)
         if phase not in LEGACY_OR_JAVA_ONLY_RECIPE_FAILURES:
-            require(phase not in cooldown_body, f"{phase} must not cooldown/quarantine the endpoint directly", failures)
+            require(not has_phase(cooldown_body, phase, native_constants), f"{phase} must not cooldown/quarantine the endpoint directly", failures)
     for phase in ("secret_parse_invalid_domain_control_char", "secret_parse_invalid_domain"):
-        require(phase in cooldown_body, f"native endpoint policy must quarantine invalid secret phase {phase}", failures)
+        require(has_phase(cooldown_body, phase, native_constants), f"native endpoint policy must quarantine invalid secret phase {phase}", failures)
     require(
-        '"handshake_profiles_exhausted"' in cooldown_body
+        has_phase(cooldown_body, "handshake_profiles_exhausted", native_constants)
         and '"handshake_profiles_exhausted"' not in recipe_body,
         "only recipe exhaustion should become a recovery endpoint failure",
         failures,
@@ -163,7 +185,7 @@ def main() -> int:
         failures,
     )
     require(
-        "handshake_profiles_exhausted" in socket
+        has_phase(socket, "handshake_profiles_exhausted", native_constants)
         and "recipe_exhausted" in socket,
         "ConnectionSocket must publish handshake_profiles_exhausted after recipe exhaustion",
         failures,
@@ -172,6 +194,19 @@ def main() -> int:
         'next=unsupported_for_current_client' not in socket
         and 'proxyCheckDiagnostic = "unsupported_for_current_client"' not in socket,
         "ConnectionSocket must not publish unsupported_for_current_client from the active recipe-exhaustion path",
+        failures,
+    )
+
+    parser_variant_body = block(adaptive_policy, "static bool serverHelloParserVariantAllowed", "uint32_t MtProxyAdaptivePolicy::sniVariantMask")
+    for phase in NO_BYTE_AFTER_CLIENT_HELLO_FAILURES:
+        require(
+            phase not in parser_variant_body,
+            f"{phase} must keep parserVariant == PARSER_STANDARD_HMAC because no server bytes were available",
+            failures,
+        )
+    require(
+        "post_handshake_no_appdata" not in parser_variant_body,
+        "post_handshake_no_appdata must not be part of the ServerHello parser cross-product expansion",
         failures,
     )
 
@@ -283,14 +318,20 @@ def main() -> int:
         failures,
     )
     require(
+        "case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:" not in block(phase_policy, "public static boolean isOneShotTerminal", "public static boolean shouldAccelerateProxyRotation")
+        and "terminalExactFailure()" not in block(recipe_phases, "HANDSHAKE_PROFILES_EXHAUSTED", "MTPROXY_PACKET_SENT_NO_RESPONSE"),
+        "handshake_profiles_exhausted must not become terminalExactConfig or isOneShotTerminal in Java",
+        failures,
+    )
+    require(
         "UNSUPPORTED_FOR_CURRENT_CLIENT" not in recipe_phases
         or "terminalExactFailure()" not in block(recipe_phases, "UNSUPPORTED_FOR_CURRENT_CLIENT", "MTPROXY_PACKET_SENT_NO_RESPONSE"),
         "unsupported_for_current_client must not remain a terminal exact-config Java verdict",
         failures,
     )
     require(
-        "tls_alert_after_client_hello" not in block(connection, "static bool mtProxyDiagnosticNeedsReconnectBackoff", "static uint32_t mtProxyReconnectBackoffBaseMs")
-        and "handshake_profiles_exhausted" in connection,
+        not has_phase(block(connection, "static bool mtProxyDiagnosticNeedsReconnectBackoff", "static uint32_t mtProxyReconnectBackoffBaseMs"), "tls_alert_after_client_hello", native_constants)
+        and has_phase(connection, "handshake_profiles_exhausted", native_constants),
         "connection reconnect backoff must wait for recipe exhaustion before endpoint-level backoff",
         failures,
     )
@@ -322,14 +363,16 @@ def main() -> int:
     )
 
     require(
-        "sanitizeMtProxySecretDomain" in socket
-        and "secret_parse_invalid_domain_control_char" in socket
-        and "validateMtProxySecretDomain" in socket,
+        "buildMtProxySecretDomainPlan" in socket
+        and "sanitizeMtProxySecretDomain" in secret_domain
+        and has_phase(secret_domain, "secret_parse_invalid_domain_control_char", native_constants)
+        and "validateMtProxySecretDomain" in secret_domain,
         "native FakeTLS setup must sanitize and validate SNI before ClientHello construction",
         failures,
     )
     require(
-        "secretDomainSanitized" in socket
+        "secretDomainSanitized" in secret_domain
+        and "domainPlan.sanitized" in socket
         and 'publishProxyConnectionStage("secret_domain_sanitized")' in socket
         and "recordSecretDomainSanitized" in socket
         and "mtproxy_startup secret_domain_sanitized" in socket,

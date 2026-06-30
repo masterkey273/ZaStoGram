@@ -21,6 +21,10 @@ MACHINE_HDR = ROOT / "TMessagesProj/jni/tgnet/ConnectionSocketStateMachine.h"
 CONNECTION_CPP = ROOT / "TMessagesProj/jni/tgnet/Connection.cpp"
 PROXY_CHECK_HDR = ROOT / "TMessagesProj/jni/tgnet/ProxyCheckInfo.h"
 MTPROXY_OPTIONS = ROOT / "TMessagesProj/jni/tgnet/MtProxyOptions.h"
+MTPROXY_PHASE_CONTRACT_H = ROOT / "TMessagesProj/jni/tgnet/MtProxyPhaseContract.h"
+MTPROXY_SECRET_DOMAIN_H = ROOT / "TMessagesProj/jni/tgnet/MtProxySecretDomain.h"
+MTPROXY_SECRET_DOMAIN_CPP = ROOT / "TMessagesProj/jni/tgnet/MtProxySecretDomain.cpp"
+CMAKE = ROOT / "TMessagesProj/jni/CMakeLists.txt"
 CM_JAVA = ROOT / "TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java"
 CM_CPP = ROOT / "TMessagesProj/jni/tgnet/ConnectionsManager.cpp"
 CM_HDR = ROOT / "TMessagesProj/jni/tgnet/ConnectionsManager.h"
@@ -54,6 +58,10 @@ def main() -> int:
     connection_cpp = CONNECTION_CPP.read_text(encoding="utf-8")
     proxy_check_header = PROXY_CHECK_HDR.read_text(encoding="utf-8")
     mtproxy_options = MTPROXY_OPTIONS.read_text(encoding="utf-8")
+    phase_contract = MTPROXY_PHASE_CONTRACT_H.read_text(encoding="utf-8")
+    secret_domain_h = MTPROXY_SECRET_DOMAIN_H.read_text(encoding="utf-8")
+    secret_domain_cpp = MTPROXY_SECRET_DOMAIN_CPP.read_text(encoding="utf-8")
+    cmake = CMAKE.read_text(encoding="utf-8")
     java = CM_JAVA.read_text(encoding="utf-8")
     manager_cpp = CM_CPP.read_text(encoding="utf-8")
     manager_header = CM_HDR.read_text(encoding="utf-8")
@@ -74,6 +82,9 @@ def main() -> int:
         else:
             end = cpp.find(f"static TlsHello {next_name}()", start)
         return cpp[start:end if end > start else len(cpp)]
+
+    def connection_socket_defines(name: str) -> bool:
+        return re.search(rf"(?m)^(?:static[ \t]+)?[A-Za-z_][\w:<>, \t*&]*[ \t]+{re.escape(name)}[ \t]*\(", cpp) is not None
 
     def balanced_scopes(name: str, next_name: str | None = None) -> bool:
         body = function_body(name, next_name)
@@ -493,10 +504,33 @@ def main() -> int:
         "proxy host resolution must bypass DNS for literal x.x.x.x.sslip.io hosts",
     )
     require(
-        "mtProxySecretKindName" in cpp
+        "mtProxySecretKindName" in secret_domain_h
+        and "const char *mtProxySecretKindName" in secret_domain_cpp
         and "secret_kind=%s" in cpp
         and "is_faketls=%d" in cpp,
         "MTProxy logs must classify secrets so JA4/FakeTLS diagnosis is limited to ee secrets",
+    )
+    forbidden_connection_socket_helpers = (
+        "mtProxyPunycodeDomain",
+        "mtProxyPunycodeLabel",
+        "mtProxyUtf8ToCodepoints",
+        "buildMtProxySecretDomainPlan",
+        "sanitizeMtProxySecretDomain",
+        "validateMtProxySecretDomain",
+    )
+    require(
+        not any(connection_socket_defines(name) for name in forbidden_connection_socket_helpers)
+        and "struct MtProxySecretDomainPlan" not in cpp
+        and "struct MtProxySecretDomainPlan" in secret_domain_h
+        and "buildMtProxySecretDomainPlan" in secret_domain_cpp
+        and "sanitizeMtProxySecretDomain" in secret_domain_cpp
+        and "validateMtProxySecretDomain" in secret_domain_cpp
+        and "MtProxyPhase::SecretParseInvalidDomainControlChar" in secret_domain_cpp
+        and "MtProxyPhase::SecretParseInvalidDomain" in secret_domain_cpp
+        and 'SecretParseInvalidDomainControlChar = "secret_parse_invalid_domain_control_char"' in phase_contract
+        and 'SecretParseInvalidDomain = "secret_parse_invalid_domain"' in phase_contract
+        and "tgnet/MtProxySecretDomain.cpp" in cmake,
+        "secret-domain planning helpers must live in MtProxySecretDomain and stay out of ConnectionSocket.cpp",
     )
     require(
         "mtProxyDisconnectReasonName" in cpp
@@ -552,7 +586,8 @@ def main() -> int:
         and "currentSecretIsFakeTls" in timeout_block
         and "mtproxyFirstTlsFrameSentLogged" in timeout_block
         and "!mtproxyFirstTlsDataReceivedLogged" in timeout_block
-        and 'proxyCheckDiagnostic == "post_handshake_no_appdata"' in timeout_block,
+        and ('proxyCheckDiagnostic == "post_handshake_no_appdata"' in timeout_block
+             or "proxyCheckDiagnostic == MtProxyPhase::PostHandshakeNoAppdata" in timeout_block),
         "FakeTLS must not stay half-connected forever after first MTProto TLS data is sent without a server response",
     )
 

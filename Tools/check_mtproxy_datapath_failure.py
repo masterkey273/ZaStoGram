@@ -89,7 +89,8 @@ def main() -> int:
 
     close_body = slice_between(socket, "void ConnectionSocket::closeSocket", "void ConnectionSocket::onEvent")
     require(
-        'terminalDiagnostic == "post_handshake_no_appdata"' in close_body
+        ('terminalDiagnostic == "post_handshake_no_appdata"' in close_body
+         or "terminalDiagnostic == MtProxyPhase::PostHandshakeNoAppdata" in close_body)
         and 'terminalDiagnostic == "mtproxy_packet_sent_no_response"' in close_body
         and 'context.networkEndpointKey = "";' in close_body
         and 'publishProxyConnectionStage("shadowed_socket_failure")' in close_body

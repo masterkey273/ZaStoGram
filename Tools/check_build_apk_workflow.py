@@ -133,6 +133,8 @@ def check_workflow(workflow_text: str) -> list[str]:
         "python3 Tools/check_mtproxy_all.py",
         "python3 Tools/check_plugin_python_deps.py",
         "python3 Tools/check_plugin_utils_javadoc.py",
+        "python3 Tools/check_android_string_format_contract.py",
+        "python3 Tools/check_logs_activity_compile_contract.py",
         "python3 Tools/check_zasto_edit_history_contract.py",
         "release:",
         "needs: build",

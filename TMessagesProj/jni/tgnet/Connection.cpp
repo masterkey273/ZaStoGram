@@ -20,6 +20,7 @@
 #include "Datacenter.h"
 #include "NativeByteBuffer.h"
 #include "ByteArray.h"
+#include "MtProxyPhaseContract.h"
 
 thread_local static uint32_t lastConnectionToken = 1;
 
@@ -61,15 +62,15 @@ static bool mtProxyDiagnosticNeedsReconnectBackoff(const char *diagnostic) {
     if (diagnostic == nullptr) {
         return false;
     }
-    return strcmp(diagnostic, "host_resolve_failed") == 0 ||
-           strcmp(diagnostic, "host_resolve_timeout") == 0 ||
-           strcmp(diagnostic, "tcp_not_connected") == 0 ||
+    return strcmp(diagnostic, MtProxyPhase::HostResolveFailed) == 0 ||
+           strcmp(diagnostic, MtProxyPhase::HostResolveTimeout) == 0 ||
+           strcmp(diagnostic, MtProxyPhase::TcpNotConnected) == 0 ||
            strcmp(diagnostic, "tcp_connected_no_pong") == 0 ||
-           strcmp(diagnostic, "secret_parse_invalid_domain_control_char") == 0 ||
-           strcmp(diagnostic, "secret_parse_invalid_domain") == 0 ||
-           strcmp(diagnostic, "handshake_profiles_exhausted") == 0 ||
+           strcmp(diagnostic, MtProxyPhase::SecretParseInvalidDomainControlChar) == 0 ||
+           strcmp(diagnostic, MtProxyPhase::SecretParseInvalidDomain) == 0 ||
+           strcmp(diagnostic, MtProxyPhase::HandshakeProfilesExhausted) == 0 ||
            strcmp(diagnostic, "mtproxy_packet_sent_no_response") == 0 ||
-           strcmp(diagnostic, "post_handshake_no_appdata") == 0 ||
+           strcmp(diagnostic, MtProxyPhase::PostHandshakeNoAppdata) == 0 ||
            strcmp(diagnostic, "dropped_early_after_appdata") == 0;
 }
 

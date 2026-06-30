@@ -649,6 +649,12 @@ public class LogsActivity extends BaseFragment {
             setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
 
             FrameLayout checkContainer = new FrameLayout(context);
+            checkBox = new CheckBox(context);
+            checkBox.setClickable(false);
+            checkBox.setFocusable(false);
+            checkBox.setButtonTintList(ColorStateList.valueOf(Theme.getColor(Theme.key_switchTrackChecked)));
+            checkContainer.addView(checkBox, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER));
+
             checkContainer.setOnClickListener(v -> {
                 if (file == null) {
                     return;
@@ -658,12 +664,6 @@ public class LogsActivity extends BaseFragment {
                 onSelectionToggled(file);
             });
             addView(checkContainer, LayoutHelper.createFrame(56, LayoutHelper.MATCH_PARENT, Gravity.LEFT | Gravity.TOP));
-
-            checkBox = new CheckBox(context);
-            checkBox.setClickable(false);
-            checkBox.setFocusable(false);
-            checkBox.setButtonTintList(ColorStateList.valueOf(Theme.getColor(Theme.key_switchTrackChecked)));
-            checkContainer.addView(checkBox, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER));
 
             titleView = new TextView(context);
             titleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));

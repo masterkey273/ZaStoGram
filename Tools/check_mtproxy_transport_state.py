@@ -193,10 +193,11 @@ def main() -> int:
         failures,
     )
 
-    server_hello_body = socket[
-        socket.find('publishProxyConnectionStage("server_hello_hmac_ok")'):
-        socket.find('proxyCheckDiagnostic = "post_handshake_no_appdata"', socket.find('publishProxyConnectionStage("server_hello_hmac_ok")'))
-    ]
+    server_hello_start = socket.find('publishProxyConnectionStage("server_hello_hmac_ok")')
+    server_hello_end = socket.find('proxyCheckDiagnostic = "post_handshake_no_appdata"', server_hello_start)
+    if server_hello_end == -1:
+        server_hello_end = socket.find("proxyCheckDiagnostic = MtProxyPhase::PostHandshakeNoAppdata", server_hello_start)
+    server_hello_body = socket[server_hello_start:server_hello_end]
     require(
         'recordMtProxyEndpointHandshakeOk("server_hello_hmac_ok")' in server_hello_body
         and "recordMtProxyEndpointDataPathSuccess" not in server_hello_body,

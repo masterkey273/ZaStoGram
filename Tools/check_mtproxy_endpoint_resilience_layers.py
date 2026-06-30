@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 import sys
 
 from mtproxy_phase_contract import java_visible_live_phases, native_phase_names
@@ -19,6 +20,7 @@ FILES = {
     "values": ROOT / "TMessagesProj/src/main/res/values/strings.xml",
     "values_ru": ROOT / "TMessagesProj/src/main/res/values-ru/strings.xml",
     "analyzer": ROOT / "Tools/analyze_mtproxy_markers.py",
+    "native_phase_contract": ROOT / "TMessagesProj/jni/tgnet/MtProxyPhaseContract.h",
 }
 
 REQUIRED_PHASES = sorted(java_visible_live_phases() & native_phase_names())
@@ -34,6 +36,18 @@ def require(condition, message):
         sys.exit(1)
 
 
+def native_phase_constants():
+    return {
+        value: name
+        for name, value in re.findall(r'constexpr const char \*([A-Za-z0-9_]+)\s*=\s*"([a-z0-9_]+)"', read("native_phase_contract"))
+    }
+
+
+def has_phase(source, phase, constants):
+    constant = constants.get(phase)
+    return f'"{phase}"' in source or (constant is not None and f"MtProxyPhase::{constant}" in source)
+
+
 def main():
     socket = read("socket")
     endpoint_policy = read("endpoint_policy")
@@ -47,6 +61,7 @@ def main():
     analyzer = read("analyzer")
     values = read("values")
     values_ru = read("values_ru")
+    phase_constants = native_phase_constants()
     combined = "\n".join([socket, socket_state_header, connection, connection_header, diagnostics, analyzer, values, values_ru])
 
     require(
@@ -134,11 +149,11 @@ def main():
     require(
         "MT_PROXY_ENDPOINT_USABLE_SUCCESS_HOLD_MS" in endpoint_policy
         and "usableSuccessRemainingMsLocked" in shadow_body
-        and 'diagnostic == "tcp_not_connected"' in shadow_body
+        and has_phase(shadow_body, "tcp_not_connected", phase_constants)
         and 'diagnostic == "true_client_hello_timeout"' in shadow_body
         and 'diagnostic == "client_hello_sent_no_server_hello"' in shadow_body
         and 'diagnostic == "mtproxy_packet_sent_no_response"' in shadow_body
-        and 'diagnostic == "post_handshake_no_appdata"' in shadow_body
+        and has_phase(shadow_body, "post_handshake_no_appdata", phase_constants)
         and 'diagnostic == "dropped_early_after_appdata" || diagnostic == "dropped_after_appdata"' in shadow_body
         and "return false;" in shadow_body,
         "fresh data-path success must shadow only pre-data-path sibling failures and leave real post-data drops unshadowed",
@@ -151,7 +166,9 @@ def main():
     )
     require(
         "networkFailure" in cooldown_body
-        and 'diagnostic == "host_resolve_failed" || diagnostic == "host_resolve_timeout" || diagnostic == "tcp_not_connected"' in cooldown_body
+        and 'diagnostic == "host_resolve_failed"' in cooldown_body
+        and 'diagnostic == "host_resolve_timeout"' in cooldown_body
+        and has_phase(cooldown_body, "tcp_not_connected", phase_constants)
         and "priority" in cooldown_body
         and "interactiveNetworkFailure" in cooldown_body
         and "MT_PROXY_ENDPOINT_INTERACTIVE_NETWORK_COOLDOWN_MAX_MS" in cooldown_body
@@ -252,7 +269,7 @@ def main():
     publish_idx = close_body.find("publishProxyConnectionStage(terminalDiagnostic.c_str())")
     require(
         "suppressProxyCloseDiagnostic" in close_body
-        and 'proxyCheckDiagnostic == "post_handshake_no_appdata"' in close_body
+        and has_phase(close_body, "post_handshake_no_appdata", phase_constants)
         and "!mtproxyFirstTlsFrameSentLogged" in close_body
         and "!mtproxyFirstPlainDataSentLogged" in close_body
         and early_drop_idx >= 0
@@ -496,7 +513,7 @@ def main():
     require(
         '"host_resolve_failed"' in state_key_body
         and '"host_resolve_timeout"' in state_key_body
-        and '"tcp_not_connected"' in state_key_body
+        and has_phase(state_key_body, "tcp_not_connected", phase_constants)
         and '"tcp_connected_no_pong"' in state_key_body
         and '"mtproxy_packet_sent_no_response"' not in state_key_body
         and '"dropped_early_after_appdata"' in state_key_body

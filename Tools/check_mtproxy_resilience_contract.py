@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 import sys
 
 from mtproxy_phase_contract import analyzer_failure_phases, java_phase_names
@@ -23,6 +24,7 @@ STATUS_MIRROR = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/Proxy
 POLICY = ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/ProxyPhasePolicy.java"
 ANALYZER = ROOT / "Tools/analyze_mtproxy_markers.py"
 README = ROOT / "README.md"
+NATIVE_PHASE_CONTRACT = ROOT / "TMessagesProj/jni/tgnet/MtProxyPhaseContract.h"
 
 
 def read(path: Path) -> str:
@@ -43,6 +45,18 @@ def slice_between(text: str, start: str, end: str) -> str:
     return text[start_idx:end_idx]
 
 
+def native_phase_constants() -> dict[str, str]:
+    return {
+        value: name
+        for name, value in re.findall(r'constexpr const char \*([A-Za-z0-9_]+)\s*=\s*"([a-z0-9_]+)"', read(NATIVE_PHASE_CONTRACT))
+    }
+
+
+def has_phase(source: str, phase: str, constants: dict[str, str]) -> bool:
+    constant = constants.get(phase)
+    return f'"{phase}"' in source or (constant is not None and f"MtProxyPhase::{constant}" in source)
+
+
 def main() -> None:
     socket = read(SOCKET)
     endpoint_policy = read(ENDPOINT_POLICY)
@@ -60,6 +74,7 @@ def main() -> None:
     policy = read(POLICY)
     analyzer = read(ANALYZER)
     readme = read(README)
+    phase_constants = native_phase_constants()
 
     open_connection = slice_between(
         socket,
@@ -140,13 +155,13 @@ def main() -> None:
     )
     require(
         'phase == "host_resolve_failed"' in endpoint_key
-        and 'phase == "tcp_not_connected"' in endpoint_key
+        and has_phase(endpoint_key, "tcp_not_connected", phase_constants)
         and "networkEndpointKey" in endpoint_key,
         "host_resolve_failed and tcp_not_connected must use the host:port network key",
     )
     require(
         '"host_resolve_failed"' not in recipe
-        and 'diagnostic == "tcp_not_connected"' in recipe
+        and has_phase(recipe, "tcp_not_connected", phase_constants)
         and "return false;" in recipe,
         "pre-TLS DNS/TCP failures must not change JA4/profile/ClientHello recipe",
     )
@@ -158,7 +173,7 @@ def main() -> None:
         "endpoint circuit-breaker and TCP connect gate must cover every MTProxy secret kind",
     )
     require(
-        '"tcp_not_connected"' in cooldown
+        has_phase(cooldown, "tcp_not_connected", phase_constants)
         and '"mtproxy_packet_sent_no_response"' in cooldown
         and "plainNoResponseFailures" in cooldown,
         "tcp failures and dd/plain no-response must feed endpoint cooldown",

@@ -32,6 +32,7 @@ def main() -> int:
     coordinator_h = read(TGNET / "MtProxyProbeCoordinator.h")
     coordinator_cpp = read(TGNET / "MtProxyProbeCoordinator.cpp")
     socket = read(TGNET / "ConnectionSocket.cpp")
+    secret_domain_cpp = read(TGNET / "MtProxySecretDomain.cpp")
     state_machine = read(TGNET / "ConnectionSocketStateMachine.h")
     options_h = read(TGNET / "MtProxyOptions.h")
     phase_policy = read(MESSENGER / "ProxyPhasePolicy.java")
@@ -105,10 +106,11 @@ def main() -> int:
     )
     require(
         "buildMtProxySecretDomainPlan" in socket
+        and "MtProxySecretDomainPlan buildMtProxySecretDomainPlan" in secret_domain_cpp
         and "secret_domain_sanitized" in socket
         and "currentClientHelloSni" in socket
         and "hello.setDomain(currentClientHelloSni)" in socket
-        and "SNI_OPTIONAL_NO_SNI" in socket,
+        and "SNI_OPTIONAL_NO_SNI" in secret_domain_cpp,
         "native SNI plan must sanitize invalid raw domains and feed recipe-specific clientHelloSni",
         failures,
     )
