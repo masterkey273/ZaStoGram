@@ -62,6 +62,7 @@ public class ProxyCheckDiagnostics {
     public static final String UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO = "unrecognized_tls_response_after_client_hello";
     public static final String SERVER_HELLO_HMAC_MISMATCH = "server_hello_hmac_mismatch";
     public static final String BACKGROUND_HANDSHAKE_ABORTED = "background_handshake_aborted";
+    public static final String HANDSHAKE_PROFILES_EXHAUSTED = "handshake_profiles_exhausted";
     public static final String UNSUPPORTED_FOR_CURRENT_CLIENT = "unsupported_for_current_client";
     public static final String MTPROXY_PACKET_SENT_NO_RESPONSE = "mtproxy_packet_sent_no_response";
     public static final String POST_HANDSHAKE_NO_APPDATA = "post_handshake_no_appdata";
@@ -75,6 +76,9 @@ public class ProxyCheckDiagnostics {
     public static String normalize(String diagnostic) {
         if (TextUtils.isEmpty(diagnostic)) {
             return UNKNOWN_FAIL;
+        }
+        if (UNSUPPORTED_FOR_CURRENT_CLIENT.equals(diagnostic)) {
+            return HANDSHAKE_PROFILES_EXHAUSTED;
         }
         switch (diagnostic) {
             case OK:
@@ -128,7 +132,7 @@ public class ProxyCheckDiagnostics {
             case UNRECOGNIZED_TLS_RESPONSE_AFTER_CLIENT_HELLO:
             case SERVER_HELLO_HMAC_MISMATCH:
             case BACKGROUND_HANDSHAKE_ABORTED:
-            case UNSUPPORTED_FOR_CURRENT_CLIENT:
+            case HANDSHAKE_PROFILES_EXHAUSTED:
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
             case POST_HANDSHAKE_NO_APPDATA:
             case DROPPED_EARLY_AFTER_APPDATA:
@@ -488,8 +492,8 @@ public class ProxyCheckDiagnostics {
                 return title("ProxyStatusUnrecognizedTlsResponseAfterClientHello", R.string.ProxyStatusUnrecognizedTlsResponseAfterClientHello);
             case SERVER_HELLO_HMAC_MISMATCH:
                 return title("ProxyStatusServerHelloHmacMismatch", R.string.ProxyStatusServerHelloHmacMismatch);
-            case UNSUPPORTED_FOR_CURRENT_CLIENT:
-                return title("ProxyStatusUnsupportedForCurrentClient", R.string.ProxyStatusUnsupportedForCurrentClient);
+            case HANDSHAKE_PROFILES_EXHAUSTED:
+                return title("ProxyStatusHandshakeProfilesExhausted", R.string.ProxyStatusHandshakeProfilesExhausted);
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
                 return title("ProxyStatusMtproxyPacketSentNoResponse", R.string.ProxyStatusMtproxyPacketSentNoResponse);
             case POST_HANDSHAKE_NO_APPDATA:
@@ -629,8 +633,8 @@ public class ProxyCheckDiagnostics {
                 return LocaleController.getString(R.string.ProxyStatusUnrecognizedTlsResponseAfterClientHello);
             case SERVER_HELLO_HMAC_MISMATCH:
                 return LocaleController.getString(R.string.ProxyStatusServerHelloHmacMismatch);
-            case UNSUPPORTED_FOR_CURRENT_CLIENT:
-                return LocaleController.getString(R.string.ProxyStatusUnsupportedForCurrentClient);
+            case HANDSHAKE_PROFILES_EXHAUSTED:
+                return LocaleController.getString(R.string.ProxyStatusHandshakeProfilesExhausted);
             case MTPROXY_PACKET_SENT_NO_RESPONSE:
                 return LocaleController.getString(R.string.ProxyStatusMtproxyPacketSentNoResponse);
             case POST_HANDSHAKE_NO_APPDATA:

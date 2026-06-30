@@ -118,23 +118,22 @@ def verify_runtime_contract(failures: list[str]) -> None:
         failures,
     )
 
-    bad_terminal_hysteresis = run_verifier(
+    good_profiles_hysteresis = run_verifier(
         base_log(
-            "06-30 13:20:40.000 proxy_control decision=held_by_failure_hysteresis source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:wb.ru failures=1",
+            "06-30 13:20:40.000 proxy_control decision=held_by_failure_hysteresis source=native_stage origin=active_proxy account=0 phase=handshake_profiles_exhausted endpoint=fast2.mtproxy.zip:443:ee:wb.ru failures=1",
         )
     )
     require(
-        bad_terminal_hysteresis.returncode != 0
-        and "one-shot terminal phase must not wait" in bad_terminal_hysteresis.stderr,
-        "runtime verifier must reject unsupported_for_current_client hysteresis",
+        good_profiles_hysteresis.returncode == 0,
+        good_profiles_hysteresis.stderr.strip() or "runtime verifier must accept handshake_profiles_exhausted hysteresis",
         failures,
     )
 
     good_terminal_quarantine = run_verifier(
         base_log(
-            "06-30 13:20:40.000 proxy_control decision=terminal_proxy_config_unsupported source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru active_selected=1",
-            "06-30 13:20:40.010 proxy_control decision=cancel_endpoint_attempts source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru proxy_check_cancelled=0 native_cancelled=3",
-            "06-30 13:20:40.020 proxy_control decision=terminal_quarantine source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru",
+            "06-30 13:20:40.000 proxy_control decision=terminal_proxy_config_unsupported source=native_stage origin=active_proxy account=0 phase=secret_parse_invalid_domain endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru active_selected=1",
+            "06-30 13:20:40.010 proxy_control decision=cancel_endpoint_attempts source=native_stage origin=active_proxy account=0 phase=secret_parse_invalid_domain endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru proxy_check_cancelled=0 native_cancelled=3",
+            "06-30 13:20:40.020 proxy_control decision=terminal_quarantine source=native_stage origin=active_proxy account=0 phase=secret_parse_invalid_domain endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru",
             "06-30 13:20:40.030 proxy_control decision=ignored_cancelled_generation source=native_stage origin=active_proxy account=0 phase=ignored_cancelled_generation endpoint=fast2.mtproxy.zip:443:ee:wb.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:wb.ru",
         )
     )

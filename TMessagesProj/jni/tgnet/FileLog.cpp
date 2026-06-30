@@ -132,9 +132,10 @@ void FileLog::writeNativeLogLine(int androidPriority, const char *fileSeverity, 
            formattedMessage.c_str());
     fflush(stdout);
 #endif
-    if (logger.logFile) {
-        int written = fprintf(logger.logFile, "%s\n", line.c_str());
-        fflush(logger.logFile);
+    FILE *logFile = logger.logFile;
+    if (logFile) {
+        int written = fprintf(logFile, "%s\n", line.c_str());
+        fflush(logFile);
         if (written > 0) {
             logger.logBytesWritten += (size_t) written;
         }

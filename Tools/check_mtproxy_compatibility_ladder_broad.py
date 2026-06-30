@@ -156,13 +156,13 @@ def main() -> int:
     )
 
     classify_policy = block(phase_policy, "private static PhaseInfo classify", "private static PhaseInfo live")
-    unsupported_policy = block(classify_policy, "case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:", "case ProxyCheckDiagnostics.MTPROXY_PACKET_SENT_NO_RESPONSE:")
+    exhausted_policy = block(classify_policy, "case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:", "case ProxyCheckDiagnostics.MTPROXY_PACKET_SENT_NO_RESPONSE:")
     require(
-        "terminalExactFailure()" in unsupported_policy
+        "return failure(KeyScope.EXACT, true, true)" in exhausted_policy
         and "terminalExactConfig" in phase_policy
         and "terminalExactConfigVerdict" in runtime
-        and "terminal_proxy_config_unsupported" in runtime,
-        "unsupported_for_current_client must be terminal exact config, bypassing normal rotation hysteresis",
+        and "terminalExactFailure()" not in exhausted_policy,
+        "handshake_profiles_exhausted must use normal recovery backoff/rotation hysteresis, not terminal exact config",
         failures,
     )
     native_stage = block(runtime, "public static Decision onNativeStage", "private static boolean isActiveProxyEvent")
@@ -179,7 +179,7 @@ def main() -> int:
         and "terminal_proxy_config_unsupported" in row_only_policy
         and "row_only=1" in row_only_policy
         and "nativeCancelled = matchesActive ? 0" in row_only_policy,
-        "candidate terminal unsupported must be row-only and must not cancel the active native attempt when it matches the active endpoint",
+        "candidate terminal invalid-config phases must be row-only and must not cancel the active native attempt when it matches the active endpoint",
         failures,
     )
 

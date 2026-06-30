@@ -91,6 +91,8 @@ FAKETLS_FAILURE_VERDICTS = {
     "unrecognized_tls_response_after_client_hello",
     "server_hello_hmac_mismatch",
     "background_handshake_aborted",
+    "handshake_profiles_exhausted",
+    # unsupported_for_current_client is kept as a legacy alias for old captures.
     "unsupported_for_current_client",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
@@ -366,6 +368,7 @@ class Attempt:
             "unrecognized_response_after_client_hello": "unrecognized_response_after_client_hello",
             "unrecognized_tls_response_after_client_hello": "unrecognized_tls_response_after_client_hello",
             "post_client_hello_response_failed": "post_client_hello_response_failed",
+            "handshake_profiles_exhausted": "handshake_profiles_exhausted",
             "unsupported_for_current_client": "unsupported_for_current_client",
             "recipe_exhausted": "recipe_exhausted",
             "recipe_failed": "recipe_failed",
@@ -383,6 +386,7 @@ class Attempt:
             "probe_join": "probe_join",
             "probe_working_recipe": "probe_working_recipe",
             "working_recipe_cached": "working_recipe_cached",
+            "probe_profiles_exhausted": "probe_profiles_exhausted",
             "probe_terminal_unsupported": "probe_terminal_unsupported",
             "probe_wait_timer_fire": "probe_wait_timer_fire",
             "probe_owner_complete": "probe_owner_complete",
@@ -515,8 +519,10 @@ class Attempt:
         if not has("server_hello_hmac_ok"):
             if has("background_handshake_aborted"):
                 return "background_handshake_aborted"
+            if has("handshake_profiles_exhausted"):
+                return "handshake_profiles_exhausted"
             if has("unsupported_for_current_client"):
-                return "unsupported_for_current_client"
+                return "handshake_profiles_exhausted"
             if has("server_closed_after_client_hello"):
                 return "server_closed_after_client_hello"
             if has("tls_alert_after_client_hello"):
@@ -1166,7 +1172,7 @@ def print_layer_recommendations(attempts: list[Attempt], all_lines: list[str]) -
         f"short_tls_response_after_client_hello={faketls_verdicts['short_tls_response_after_client_hello']} "
         f"unrecognized_tls_response_after_client_hello={faketls_verdicts['unrecognized_tls_response_after_client_hello']} "
         f"server_hello_hmac_mismatch={faketls_verdicts['server_hello_hmac_mismatch']} "
-        f"unsupported_for_current_client={faketls_verdicts['unsupported_for_current_client']} "
+        f"handshake_profiles_exhausted={faketls_verdicts['handshake_profiles_exhausted']} "
         "action=compatibility_recipe_ladder"
     )
     print(
@@ -1371,7 +1377,7 @@ def print_faketls_failure_timeline(attempts: list[Attempt]) -> None:
             "short_tls_response_after_client_hello",
             "unrecognized_tls_response_after_client_hello",
             "server_hello_hmac_mismatch",
-            "unsupported_for_current_client",
+            "handshake_profiles_exhausted",
             "post_handshake_no_appdata",
         }
     ]
@@ -1825,7 +1831,8 @@ def print_report(attempts: list[Attempt], global_lines: list[str]) -> None:
     print("- tls_alert_after_client_hello: TCP and ClientHello completed; probable TLS alert / non-ServerHello record after ClientHello. Inspect mtproxy_tls_after_client_hello hex/record_len/alert fields before blaming the proxy.")
     print("- short_tls_response_after_client_hello: bytes arrived after ClientHello, but not enough for a parseable ServerHello flight.")
     print("- unrecognized_tls_response_after_client_hello: bytes arrived after ClientHello, but the FakeTLS parser did not recognize the server response.")
-    print("- unsupported_for_current_client: every allowed compatibility recipe failed; terminal-quarantine the exact proxy config.")
+    print("- handshake_profiles_exhausted: every allowed FakeTLS handshake recipe failed; treat as recovery/backoff, not proof that the proxy is unsupported.")
+    print("- unsupported_for_current_client: legacy alias from older captures; read it as handshake_profiles_exhausted.")
     print("- server_hello_hmac_mismatch: likely ClientHello/profile/server response mismatch, not plain packet loss.")
     print("- mtproxy_packet_sent_no_response: plain dd TCP opened and the first MTProxy packet was sent, but no server reply arrived.")
     print("- handshake_ok_no_appdata_sent: HMAC passed and on_connected fired, but this socket closed before app-data was sent; usually idle/restart noise, not a proxy failure.")

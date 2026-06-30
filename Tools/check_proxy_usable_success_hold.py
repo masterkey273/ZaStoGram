@@ -38,7 +38,7 @@ PUNITIVE_FAILURE_PHASES = (
     ("tcp_not_connected", "TCP_NOT_CONNECTED"),
     ("host_resolve_failed", "HOST_RESOLVE_FAILED"),
     ("host_resolve_timeout", "HOST_RESOLVE_TIMEOUT"),
-    ("unsupported_for_current_client", "UNSUPPORTED_FOR_CURRENT_CLIENT"),
+    ("handshake_profiles_exhausted", "HANDSHAKE_PROFILES_EXHAUSTED"),
     ("mtproxy_packet_sent_no_response", "MTPROXY_PACKET_SENT_NO_RESPONSE"),
     ("post_handshake_no_appdata", "POST_HANDSHAKE_NO_APPDATA"),
     ("dropped_early_after_appdata", "DROPPED_EARLY_AFTER_APPDATA"),

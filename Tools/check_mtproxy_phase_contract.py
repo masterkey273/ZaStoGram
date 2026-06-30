@@ -110,8 +110,14 @@ def main() -> int:
 
     constants = java_constants(diagnostics)
     contract_java = java_phase_names()
+    legacy_java_aliases = {"unsupported_for_current_client"}
+    legacy_analyzer_aliases = {"unsupported_for_current_client"}
 
-    require(set(constants.values()) == contract_java, "ProxyCheckDiagnostics constants must match mtproxy_phase_contract")
+    require(set(constants.values()) - legacy_java_aliases == contract_java, "ProxyCheckDiagnostics active constants must match mtproxy_phase_contract")
+    require(
+        legacy_java_aliases <= set(constants.values()) and "UNSUPPORTED_FOR_CURRENT_CLIENT.equals(diagnostic)" in diagnostics,
+        "ProxyCheckDiagnostics must keep documented legacy aliases out of the active phase contract",
+    )
     require(
         java_cases(method_body(diagnostics, "public static String normalize", "public static boolean isFailure"), constants) == contract_java,
         "ProxyCheckDiagnostics.normalize must accept exactly the contract Java phases",
@@ -142,7 +148,7 @@ def main() -> int:
         "Connection.mtProxyDiagnosticNeedsReconnectBackoff must match contract reconnect phases",
     )
     require(
-        analyzer_literal_set(analyzer, "FAKETLS_FAILURE_VERDICTS") == analyzer_failure_phases(),
+        analyzer_literal_set(analyzer, "FAKETLS_FAILURE_VERDICTS") - legacy_analyzer_aliases == analyzer_failure_phases(),
         "analyzer FakeTLS failure verdicts must match contract analyzer failure phases",
     )
     require(

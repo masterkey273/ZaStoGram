@@ -230,7 +230,7 @@
     <string name="ProxyStatusShortTlsResponseAfterClientHello">Server sent a short TLS response after ClientHello</string>
     <string name="ProxyStatusUnrecognizedTlsResponseAfterClientHello">Server sent an unsupported TLS response after ClientHello</string>
     <string name="ProxyStatusServerHelloHmacMismatch">ServerHello failed MTProxy HMAC check</string>
-    <string name="ProxyStatusUnsupportedForCurrentClient">Proxy is unsupported by the current MTProxy compatibility set</string>
+    <string name="ProxyStatusHandshakeProfilesExhausted">MTProxy handshake profiles exhausted; retrying with backoff</string>
     <string name="ProxyStatusMtproxyPacketSentNoResponse">MTProxy packet sent, no server response</string>
     <string name="ProxyStatusPostHandshakeNoAppData">Handshake passed, no MTProto data arrived</string>
     <string name="ProxyStatusDroppedEarlyAfterAppData">Connected, then dropped soon after first data</string>

@@ -146,6 +146,8 @@ static int32_t alternateCompatibilityTlsProfile(int32_t alternateProfileIndex) {
 
 static bool serverHelloParserVariantAllowed(const std::string &diagnostic) {
     return diagnostic == "server_hello_hmac_mismatch"
+           || diagnostic == "tls_alert_after_client_hello"
+           || diagnostic == "short_tls_response_after_client_hello"
            || diagnostic == "unrecognized_response_after_client_hello"
            || diagnostic == "unrecognized_tls_response_after_client_hello";
 }
@@ -252,17 +254,20 @@ static bool sniVariantAllowed(uint32_t mask, int32_t variant) {
     return (mask & MtProxyAdaptivePolicy::sniVariantMask(variant)) != 0;
 }
 
-static std::vector<MtProxyAdaptivePolicy::RecipeCursor> buildRecipeCursorLadder(uint32_t allowedSniVariants, bool classicFallbackAllowed) {
+static std::vector<MtProxyAdaptivePolicy::RecipeCursor> buildRecipeCursorLadder(uint32_t allowedSniVariants, bool classicFallbackAllowed, const std::string &diagnostic) {
     std::vector<MtProxyAdaptivePolicy::RecipeCursor> ladder;
     if (allowedSniVariants == 0) {
         allowedSniVariants = MtProxyAdaptivePolicy::sniVariantMask(MtProxyAdaptivePolicy::SNI_SANITIZED);
     }
+    int32_t parserLimit = serverHelloParserVariantAllowed(diagnostic)
+            ? MtProxyAdaptivePolicy::PARSER_VARIANT_COUNT
+            : MtProxyAdaptivePolicy::PARSER_STANDARD_HMAC + 1;
     for (int32_t sniVariant = MtProxyAdaptivePolicy::SNI_ORIGINAL; sniVariant <= MtProxyAdaptivePolicy::SNI_PUNYCODE; sniVariant++) {
         if (!sniVariantAllowed(allowedSniVariants, sniVariant)) {
             continue;
         }
         for (int32_t family = 0; family < MtProxyAdaptivePolicy::CLIENT_HELLO_FAMILY_COUNT; family++) {
-            for (int32_t parser = 0; parser < MtProxyAdaptivePolicy::PARSER_VARIANT_COUNT; parser++) {
+            for (int32_t parser = 0; parser < parserLimit; parser++) {
                 MtProxyAdaptivePolicy::RecipeCursor cursor;
                 cursor.family = family;
                 cursor.sniVariant = sniVariant;
@@ -274,7 +279,7 @@ static std::vector<MtProxyAdaptivePolicy::RecipeCursor> buildRecipeCursorLadder(
     }
     if (sniVariantAllowed(allowedSniVariants, MtProxyAdaptivePolicy::SNI_OPTIONAL_NO_SNI)) {
         for (int32_t family = 0; family < MtProxyAdaptivePolicy::CLIENT_HELLO_FAMILY_COUNT; family++) {
-            for (int32_t parser = 0; parser < MtProxyAdaptivePolicy::PARSER_VARIANT_COUNT; parser++) {
+            for (int32_t parser = 0; parser < parserLimit; parser++) {
                 MtProxyAdaptivePolicy::RecipeCursor cursor;
                 cursor.family = family;
                 cursor.sniVariant = MtProxyAdaptivePolicy::SNI_OPTIONAL_NO_SNI;
@@ -296,7 +301,7 @@ static std::vector<MtProxyAdaptivePolicy::RecipeCursor> buildRecipeCursorLadder(
 }
 
 MtProxyAdaptivePolicy::RecipeCursor MtProxyAdaptivePolicy::initialCursor(uint32_t allowedSniVariants) {
-    std::vector<RecipeCursor> ladder = buildRecipeCursorLadder(allowedSniVariants, false);
+    std::vector<RecipeCursor> ladder = buildRecipeCursorLadder(allowedSniVariants, false, "");
     if (!ladder.empty()) {
         return ladder.front();
     }
@@ -309,7 +314,7 @@ bool MtProxyAdaptivePolicy::nextCursor(RecipeCursor *cursor, const std::string &
     if (cursor == nullptr || !failureNeedsRecipe(diagnostic)) {
         return false;
     }
-    std::vector<RecipeCursor> ladder = buildRecipeCursorLadder(allowedSniVariants, classicFallbackAllowed);
+    std::vector<RecipeCursor> ladder = buildRecipeCursorLadder(allowedSniVariants, classicFallbackAllowed, diagnostic);
     if (ladder.empty()) {
         return false;
     }
@@ -622,7 +627,17 @@ bool MtProxyAdaptivePolicy::failureNeedsRecipe(const std::string &diagnostic) {
     if (diagnostic == "tcp_not_connected") {
         return false; // ClientHello was not sent, so JA4 did not cause this failure.
     }
+    // Must stay in sync with MtProxyProbeCoordinator::failureNeedsRecipe (and the RECIPE_FAILURES
+    // contract in Tools/check_mtproxy_compatibility_recipe.py) -- this copy is what
+    // MtProxyAdaptivePolicy::nextCursor actually gates on, so a diagnostic missing here makes the
+    // coordinator's ladder walk silently no-op: completeFailure() reads hasNextCursor=false and
+    // declares the full ~150-recipe ladder exhausted after a SINGLE attempt, terminal-quarantining a
+    // proxy that was never actually tried beyond its first recipe. faketls_server_hello_wait_timeout
+    // (zero bytes back, i.e. the proxy/DPI went silent) and server_closed_after_client_hello were
+    // missing from this list, which is exactly the bug.
     return diagnostic == "true_client_hello_timeout"
+           || diagnostic == "faketls_server_hello_wait_timeout"
+           || diagnostic == "server_closed_after_client_hello"
            || diagnostic == "client_hello_sent_no_server_hello"
            || diagnostic == "tls_alert_after_client_hello"
            || diagnostic == "short_tls_response_after_client_hello"

@@ -314,7 +314,7 @@
     <string name="ProxyStatusShortTlsResponseAfterClientHello">Сервер прислал короткий TLS-ответ после ClientHello</string>
     <string name="ProxyStatusUnrecognizedTlsResponseAfterClientHello">Сервер прислал неподдерживаемый TLS-ответ после ClientHello</string>
     <string name="ProxyStatusServerHelloHmacMismatch">ServerHello не прошёл HMAC-проверку MTProxy</string>
-    <string name="ProxyStatusUnsupportedForCurrentClient">Прокси не поддерживается текущим набором совместимости MTProxy</string>
+    <string name="ProxyStatusHandshakeProfilesExhausted">Профили MTProxy handshake исчерпаны; повторяем с задержкой</string>
     <string name="ProxyStatusMtproxyPacketSentNoResponse">MTProxy-пакет отправлен, ответа сервера нет</string>
     <string name="ProxyStatusPostHandshakeNoAppData">Рукопожатие прошло, MTProto-данные не пришли</string>
     <string name="ProxyStatusDroppedEarlyAfterAppData">Подключился и быстро отвалился после первых данных</string>

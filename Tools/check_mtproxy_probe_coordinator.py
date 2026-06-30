@@ -88,18 +88,15 @@ def verify_runtime_contract(failures: list[str]) -> None:
         failures,
     )
 
-    good_terminal = run_verifier(
+    good_exhaustion = run_verifier(
         base_log(
-            "06-30 14:02:00.000 connection(0x1) mtproxy_startup recipe_exhausted key=fast2.mtproxy.zip:443:ee:xapi.ozon.ru recipe_key=fast2.mtproxy.zip:443:secret_hash=1111111111111111:xapi.ozon.ru failed_phase=faketls_server_hello_wait_timeout next=unsupported_for_current_client generation=3",
-            "06-30 14:02:00.010 proxy_control decision=terminal_proxy_config_unsupported source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:xapi.ozon.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:xapi.ozon.ru active_selected=1",
-            "06-30 14:02:00.020 proxy_control decision=cancel_endpoint_attempts source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:xapi.ozon.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:xapi.ozon.ru proxy_check_cancelled=0 native_cancelled=3",
-            "06-30 14:02:00.025 proxy_control decision=terminal_quarantine source=native_stage origin=active_proxy account=0 phase=unsupported_for_current_client endpoint=fast2.mtproxy.zip:443:ee:xapi.ozon.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:xapi.ozon.ru",
-            "06-30 14:02:00.030 proxy_control decision=ignored_cancelled_generation source=native_stage origin=active_proxy account=2 phase=ignored_cancelled_generation endpoint=fast2.mtproxy.zip:443:ee:xapi.ozon.ru probe=fast2.mtproxy.zip:443:secret_hash=1111111111111111:xapi.ozon.ru",
+            "06-30 14:02:00.000 connection(0x1) mtproxy_startup recipe_exhausted key=fast2.mtproxy.zip:443:ee:xapi.ozon.ru recipe_key=fast2.mtproxy.zip:443:secret_hash=1111111111111111:xapi.ozon.ru failed_phase=faketls_server_hello_wait_timeout next=handshake_profiles_exhausted generation=3",
+            "06-30 14:02:00.010 proxy_control decision=held_by_failure_hysteresis source=native_stage origin=active_proxy account=0 phase=handshake_profiles_exhausted endpoint=fast2.mtproxy.zip:443:ee:xapi.ozon.ru failures=1",
         )
     )
     require(
-        good_terminal.returncode == 0,
-        good_terminal.stderr.strip() or "runtime verifier must accept terminal quarantine keyed by probe",
+        good_exhaustion.returncode == 0,
+        good_exhaustion.stderr.strip() or "runtime verifier must accept recipe exhaustion as recovery backoff/hysteresis, not terminal quarantine",
         failures,
     )
 
@@ -128,12 +125,14 @@ def main() -> int:
 
     require("tgnet/MtProxyProbeCoordinator.cpp" in cmake, "CMake must compile MtProxyProbeCoordinator.cpp", failures)
     require("class MtProxyProbeCoordinator" in coordinator_h, "coordinator header must declare MtProxyProbeCoordinator", failures)
-    require("enum class DecisionKind" in coordinator_h and "StartOwner" in coordinator_h and "JoinExisting" in coordinator_h and "UseWorkingRecipe" in coordinator_h and "TerminalUnsupported" in coordinator_h, "coordinator must expose owner/join/working/terminal decisions", failures)
+    require("enum class DecisionKind" in coordinator_h and "StartOwner" in coordinator_h and "JoinExisting" in coordinator_h and "UseWorkingRecipe" in coordinator_h and "ProfilesExhaustedBackoff" in coordinator_h, "coordinator must expose owner/join/working/exhausted-backoff decisions", failures)
     require("struct ProbeKey" in coordinator_h and "secret_hash" in coordinator_cpp, "coordinator must key exact config by host:port + secret_hash + SNI", failures)
     require("beginOrJoin" in coordinator_h and "beginOrJoin" in coordinator_cpp, "coordinator must implement beginOrJoin", failures)
     require("state.status == ProbeStatus::WORKING_RECIPE_FOUND" in coordinator_cpp, "working recipe reuse must also cover the successful default level-0 recipe", failures)
-    require("completeFailure" in coordinator_h and "completeSuccess" in coordinator_h and "completeUnsupported" in coordinator_h, "coordinator must own recipe success/failure/terminal transitions", failures)
-    require("MT_PROXY_PROBE_UNSUPPORTED_HOLD_MS" in coordinator_cpp and "15 * 60 * 1000" in coordinator_cpp, "unsupported probe state must quarantine exact config for 15 minutes", failures)
+    require("completeFailure" in coordinator_h and "completeSuccess" in coordinator_h and "completeProfilesExhausted" in coordinator_h, "coordinator must own recipe success/failure/exhaustion transitions", failures)
+    require("MT_PROXY_PROBE_EXHAUSTED_HOLD_MS" in coordinator_cpp and "30 * 1000" in coordinator_cpp, "profile exhaustion must be a short recovery debounce, not a 15-minute unsupported quarantine", failures)
+    require("ProbeStatus::PROFILES_EXHAUSTED" in coordinator_cpp and "ProbeStatus::UNSUPPORTED" not in coordinator_cpp, "coordinator must model recipe exhaustion as recovery state, not unsupported terminal state", failures)
+    require("state.cursor = MtProxyAdaptivePolicy::initialCursor(state.allowedSniVariants)" in coordinator_cpp, "expired profile-exhaustion hold must reset the recipe cursor for a fresh recovery cycle", failures)
     require("RecipeCursor" in coordinator_cpp and "workingRecipe" in coordinator_cpp and "lastRecipeDiagnostic" in coordinator_cpp, "recipe ladder state must live in coordinator as a cursor and full working recipe", failures)
 
     require("MtProxyProbeCoordinator.h" in socket_cpp and "mtProxyProbeBeginOrJoin" in socket_cpp, "ConnectionSocket must delegate probe admission to coordinator", failures)
@@ -141,7 +140,7 @@ def main() -> int:
     require("MT_PROXY_HANDSHAKE_TIMER_PROBE_WAIT" in socket_cpp, "ConnectionSocket must poll joined probes by timer before opening a socket", failures)
     require("currentMtProxyProbeKey" in socket_h + socket_cpp, "ConnectionSocket must store the active probe key separately from public endpoint key", failures)
     require("probeDecision.kind == MtProxyProbeCoordinator::DecisionKind::JoinExisting" in socket_cpp, "joiners must enter probe wait instead of opening TCP", failures)
-    require("probeDecision.kind == MtProxyProbeCoordinator::DecisionKind::TerminalUnsupported" in socket_cpp, "terminal unsupported must stop before TCP/socket setup", failures)
+    require("probeDecision.kind == MtProxyProbeCoordinator::DecisionKind::ProfilesExhaustedBackoff" in socket_cpp, "profile exhaustion backoff must stop before TCP/socket setup", failures)
     require("probeDecision.kind == MtProxyProbeCoordinator::DecisionKind::UseWorkingRecipe" in socket_cpp, "working recipe must be reused before running the ladder", failures)
     open_connection_start = socket_cpp.find("void ConnectionSocket::openConnection(std::string address")
     open_connection_end = socket_cpp.find("void ConnectionSocket::openConnectionInternal(bool ipv6)", open_connection_start)
@@ -185,7 +184,7 @@ def main() -> int:
     require("native_cancelProxyEndpointAttempts" in java_connections and "probeKey" in java_connections, "Java cancellation API must pass probeKey when present", failures)
     require("cancelProxyEndpointAttempts" in manager_h and "probeKey" in manager_cpp, "native cancellation must match both endpointKey and probeKey", failures)
     require("matchesMtProxyProbeKey" in socket_h and "matchesMtProxyProbeKey" in socket_cpp, "ConnectionSocket must match cancellation by probeKey", failures)
-    require("terminal_quarantine" in runtime and "probeKey" in verifier, "runtime verifier must enforce probe-keyed terminal quarantine", failures)
+    require("handshake_profiles_exhausted" in verifier and "probeKey" in verifier, "runtime verifier must understand profile exhaustion as a probe-keyed recovery failure", failures)
 
     # --- Commit 1: bounded PROBING lifetime + recipe-progress self-connect budget + reaper (liveness) ---
     require(

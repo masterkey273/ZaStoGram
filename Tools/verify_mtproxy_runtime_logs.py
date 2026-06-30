@@ -64,6 +64,7 @@ FRESH_USABLE_FAILURE_OVERWRITE_PHASES = {
     "unrecognized_tls_response_after_client_hello",
     "server_hello_hmac_mismatch",
     "background_handshake_aborted",
+    "handshake_profiles_exhausted",
     "unsupported_for_current_client",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
@@ -80,7 +81,6 @@ USABLE_HOLD_DECISIONS = {
     "shadowed_socket_failure",
 }
 TERMINAL_ONE_SHOT_PHASES = {
-    "unsupported_for_current_client",
     "secret_parse_invalid_domain_control_char",
     "secret_parse_invalid_domain",
 }
@@ -89,6 +89,7 @@ PUNITIVE_ROTATION_PHASES = {
     "host_resolve_failed",
     "host_resolve_timeout",
     "tcp_connected_no_pong",
+    "handshake_profiles_exhausted",
     "mtproxy_packet_sent_no_response",
     "post_handshake_no_appdata",
     "dropped_early_after_appdata",

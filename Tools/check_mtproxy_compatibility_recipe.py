@@ -82,12 +82,18 @@ def main() -> int:
     strings = read(STRINGS)
     strings_ru = read(STRINGS_RU)
 
-    for phase in RECIPE_FAILURES | {"unsupported_for_current_client", "secret_parse_invalid_domain_control_char", "secret_parse_invalid_domain"}:
+    for phase in RECIPE_FAILURES | {"handshake_profiles_exhausted", "secret_parse_invalid_domain_control_char", "secret_parse_invalid_domain"}:
         require(phase in java_phase_names(), f"phase contract must expose Java phase {phase}", failures)
         if phase not in LEGACY_OR_JAVA_ONLY_RECIPE_FAILURES:
             require(phase in native_phase_names(), f"phase contract must expose native phase {phase}", failures)
         require(phase.upper() in diagnostics, f"ProxyCheckDiagnostics must define {phase}", failures)
         require(phase in analyzer, f"analyzer must know {phase}", failures)
+    require(
+        "unsupported_for_current_client" in analyzer
+        and "legacy alias" in analyzer,
+        "analyzer must keep unsupported_for_current_client only as a legacy alias for old captures",
+        failures,
+    )
 
     require("secret_domain_sanitized" in java_phase_names(), "phase contract must expose Java live phase secret_domain_sanitized", failures)
     require("secret_domain_sanitized" in native_phase_names(), "phase contract must expose native live phase secret_domain_sanitized", failures)
@@ -128,17 +134,24 @@ def main() -> int:
     )
 
     recipe_body = block(probe_coordinator, "bool MtProxyProbeCoordinator::failureNeedsRecipe", "MtProxyAdaptivePolicy::RecipeCursor MtProxyProbeCoordinator::recipeCursorForProbe")
+    # MtProxyAdaptivePolicy::nextCursor() gates its own ladder walk on MtProxyAdaptivePolicy::failureNeedsRecipe,
+    # a second copy of the same predicate. If this copy is missing a phase that recipe_body (above) treats as a
+    # recipe failure, completeFailure() calls nextCursor(), gets hasNextCursor=false on the very first attempt,
+    # and declares the whole recipe ladder exhausted -- terminal-quarantining the proxy after one try instead of
+    # walking it. This happened in production for faketls_server_hello_wait_timeout/server_closed_after_client_hello.
+    adaptive_recipe_body = block(adaptive_policy, "bool MtProxyAdaptivePolicy::failureNeedsRecipe", "int32_t MtProxyAdaptivePolicy::compatibilityTlsProfile")
     cooldown_body = block(endpoint_policy, "bool MtProxyEndpointPolicy::failureNeedsCooldown", "int64_t MtProxyEndpointPolicy::cooldownMs")
     for phase in RECIPE_FAILURES:
         require(phase in recipe_body, f"native probe coordinator must treat {phase} as a recipe failure", failures)
+        require(phase in adaptive_recipe_body, f"native adaptive policy nextCursor() must also treat {phase} as a recipe failure, or the ladder walk silently no-ops and fake-exhausts on the first attempt", failures)
         if phase not in LEGACY_OR_JAVA_ONLY_RECIPE_FAILURES:
             require(phase not in cooldown_body, f"{phase} must not cooldown/quarantine the endpoint directly", failures)
     for phase in ("secret_parse_invalid_domain_control_char", "secret_parse_invalid_domain"):
         require(phase in cooldown_body, f"native endpoint policy must quarantine invalid secret phase {phase}", failures)
     require(
-        '"unsupported_for_current_client"' in cooldown_body
-        and '"unsupported_for_current_client"' not in recipe_body,
-        "only recipe exhaustion should become an endpoint-rotating failure",
+        '"handshake_profiles_exhausted"' in cooldown_body
+        and '"handshake_profiles_exhausted"' not in recipe_body,
+        "only recipe exhaustion should become a recovery endpoint failure",
         failures,
     )
     require(
@@ -150,9 +163,24 @@ def main() -> int:
         failures,
     )
     require(
-        "unsupported_for_current_client" in socket
+        "handshake_profiles_exhausted" in socket
         and "recipe_exhausted" in socket,
-        "ConnectionSocket must publish unsupported_for_current_client only after recipe exhaustion",
+        "ConnectionSocket must publish handshake_profiles_exhausted after recipe exhaustion",
+        failures,
+    )
+    require(
+        'next=unsupported_for_current_client' not in socket
+        and 'proxyCheckDiagnostic = "unsupported_for_current_client"' not in socket,
+        "ConnectionSocket must not publish unsupported_for_current_client from the active recipe-exhaustion path",
+        failures,
+    )
+
+    ladder_body = block(adaptive_policy, "static std::vector<MtProxyAdaptivePolicy::RecipeCursor> buildRecipeCursorLadder", "MtProxyAdaptivePolicy::RecipeCursor MtProxyAdaptivePolicy::initialCursor")
+    require(
+        "serverHelloParserVariantAllowed(diagnostic)" in ladder_body
+        and "parserLimit" in ladder_body
+        and "PARSER_STANDARD_HMAC + 1" in ladder_body,
+        "cursor ladder must restrict parser variants to failures that observed server bytes",
         failures,
     )
 
@@ -228,7 +256,7 @@ def main() -> int:
         "optional no-SNI must be an explicit experimental recipe output, not a separate probe key",
         failures,
     )
-    handshake_ok_body = block(probe_coordinator, "void MtProxyProbeCoordinator::completeSuccess", "void MtProxyProbeCoordinator::completeUnsupported")
+    handshake_ok_body = block(probe_coordinator, "void MtProxyProbeCoordinator::completeSuccess", "void MtProxyProbeCoordinator::completeProfilesExhausted")
     require(
         "server_hello_hmac_ok" in handshake_ok_body
         and "probeKey" in handshake_ok_body
@@ -248,25 +276,30 @@ def main() -> int:
         failures,
     )
     require(
-        "UNSUPPORTED_FOR_CURRENT_CLIENT" in recipe_phases
-        and "terminalExactFailure()" in recipe_phases
+        "HANDSHAKE_PROFILES_EXHAUSTED" in recipe_phases
+        and "return failure(KeyScope.EXACT, true, true)" in recipe_phases
         and "terminalExactConfig" in phase_policy,
-        "unsupported_for_current_client must be a terminal exact-config verdict, not a normal rotation/hysteresis failure",
+        "handshake_profiles_exhausted must be a normal exact recovery failure with rotation hysteresis",
+        failures,
+    )
+    require(
+        "UNSUPPORTED_FOR_CURRENT_CLIENT" not in recipe_phases
+        or "terminalExactFailure()" not in block(recipe_phases, "UNSUPPORTED_FOR_CURRENT_CLIENT", "MTPROXY_PACKET_SENT_NO_RESPONSE"),
+        "unsupported_for_current_client must not remain a terminal exact-config Java verdict",
         failures,
     )
     require(
         "tls_alert_after_client_hello" not in block(connection, "static bool mtProxyDiagnosticNeedsReconnectBackoff", "static uint32_t mtProxyReconnectBackoffBaseMs")
-        and "unsupported_for_current_client" in connection,
+        and "handshake_profiles_exhausted" in connection,
         "connection reconnect backoff must wait for recipe exhaustion before endpoint-level backoff",
         failures,
     )
     require(
-        "UNSUPPORTED_CLIENT_FAILURE_BACKOFF_MS = 15 * 60 * 1000L" in health
-        and "INVALID_SECRET_FAILURE_BACKOFF_MS = 15 * 60 * 1000L" in health
+        "INVALID_SECRET_FAILURE_BACKOFF_MS = 15 * 60 * 1000L" in health
         and "INVALID_SECRET_ROTATED_AWAY_HOLD_MS = 15 * 60 * 1000L" in health
         and "rotatedAwayHoldMs(normalized)" in health
         and "failureBackoffMs(state.lastDiagnostic" in health,
-        "existing Java endpoint health policy must give unsupported-for-current-client and invalid-secret phases a longer exact-endpoint hold/backoff",
+        "existing Java endpoint health policy must reserve long exact-endpoint hold/backoff for invalid-secret phases",
         failures,
     )
     invalid_secret_policy = block(

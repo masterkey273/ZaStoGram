@@ -11,7 +11,7 @@
 #include <pthread.h>
 
 // ProbeKey.key is the existing exact recipe key: host:port:secret_hash:SNI.
-static constexpr int64_t MT_PROXY_PROBE_UNSUPPORTED_HOLD_MS = 15 * 60 * 1000;
+static constexpr int64_t MT_PROXY_PROBE_EXHAUSTED_HOLD_MS = 30 * 1000;
 static constexpr uint32_t MT_PROXY_PROBE_JOIN_WAIT_MS = 250;
 // A PROBING owner that neither completes nor advances its recipe within this window is treated
 // as wedged/leaked and reclaimed (read-side in beginOrJoin and by the select() reaper) so joiners
@@ -29,7 +29,7 @@ enum class ProbeStatus : uint8_t {
     IDLE,
     PROBING,
     WORKING_RECIPE_FOUND,
-    UNSUPPORTED,
+    PROFILES_EXHAUSTED,
     NETWORK_FAILED,
     QUARANTINED,
 };
@@ -38,7 +38,7 @@ struct MtProxyProbeState {
     ProbeStatus status = ProbeStatus::IDLE;
     uint64_t ownerToken = 0;
     uint32_t generation = 0;
-    int64_t unsupportedUntil = 0;
+    int64_t profilesExhaustedUntil = 0;
     int64_t probingUntil = 0;
     int64_t joinBudgetAnchorMs = 0;
     uint32_t joinBudgetAnchorCursorGen = 0;
@@ -105,15 +105,17 @@ MtProxyProbeCoordinator::Decision MtProxyProbeCoordinator::beginOrJoin(const Pro
     if (state.allowedSniVariants == 0) {
         state.allowedSniVariants = MtProxyAdaptivePolicy::sniVariantMask(MtProxyAdaptivePolicy::SNI_SANITIZED);
     }
-    if (state.status == ProbeStatus::UNSUPPORTED && state.unsupportedUntil > now) {
-        Decision decision = decisionFromState(DecisionKind::TerminalUnsupported, state);
+    if (state.status == ProbeStatus::PROFILES_EXHAUSTED && state.profilesExhaustedUntil > now) {
+        Decision decision = decisionFromState(DecisionKind::ProfilesExhaustedBackoff, state);
         pthread_mutex_unlock(&mtProxyProbeCoordinatorMutex);
         return decision;
     }
-    if (state.status == ProbeStatus::UNSUPPORTED && state.unsupportedUntil <= now) {
+    if (state.status == ProbeStatus::PROFILES_EXHAUSTED && state.profilesExhaustedUntil <= now) {
         state.status = ProbeStatus::IDLE;
         state.ownerToken = 0;
-        state.unsupportedUntil = 0;
+        state.profilesExhaustedUntil = 0;
+        state.cursor = MtProxyAdaptivePolicy::initialCursor(state.allowedSniVariants);
+        state.lastRecipeDiagnostic.clear();
     }
     if (state.status == ProbeStatus::WORKING_RECIPE_FOUND) {
         Decision decision = decisionFromState(DecisionKind::UseWorkingRecipe, state);
@@ -211,8 +213,8 @@ MtProxyProbeCoordinator::FailureResult MtProxyProbeCoordinator::completeFailure(
 
     state.lastRecipeDiagnostic = diagnostic;
     if (result.recipeExhausted) {
-        state.status = ProbeStatus::UNSUPPORTED;
-        state.unsupportedUntil = now + MT_PROXY_PROBE_UNSUPPORTED_HOLD_MS;
+        state.status = ProbeStatus::PROFILES_EXHAUSTED;
+        state.profilesExhaustedUntil = now + MT_PROXY_PROBE_EXHAUSTED_HOLD_MS;
         state.ownerToken = 0;
         state.joinBudgetAnchorMs = 0;
         state.joinBudgetAnchorCursorGen = 0;
@@ -244,8 +246,8 @@ void MtProxyProbeCoordinator::completeSuccess(const ProbeKey &probeKey,
 
     pthread_mutex_lock(&mtProxyProbeCoordinatorMutex);
     MtProxyProbeState &state = mtProxyProbeStates[probeKey.key];
-    // Never override an active quarantine hold.
-    if (state.status == ProbeStatus::UNSUPPORTED && state.unsupportedUntil > now) {
+    // Never override an active recipe-exhaustion recovery hold.
+    if (state.status == ProbeStatus::PROFILES_EXHAUSTED && state.profilesExhaustedUntil > now) {
         pthread_mutex_unlock(&mtProxyProbeCoordinatorMutex);
         return;
     }
@@ -283,7 +285,7 @@ void MtProxyProbeCoordinator::completeSuccess(const ProbeKey &probeKey,
     pthread_mutex_unlock(&mtProxyProbeCoordinatorMutex);
 }
 
-void MtProxyProbeCoordinator::completeUnsupported(const ProbeKey &probeKey, uint64_t callerToken, int64_t now) {
+void MtProxyProbeCoordinator::completeProfilesExhausted(const ProbeKey &probeKey, uint64_t callerToken, int64_t now) {
     if (probeKey.key.empty()) {
         return;
     }
@@ -293,11 +295,11 @@ void MtProxyProbeCoordinator::completeUnsupported(const ProbeKey &probeKey, uint
         pthread_mutex_unlock(&mtProxyProbeCoordinatorMutex);
         return;
     }
-    state.status = ProbeStatus::UNSUPPORTED;
+    state.status = ProbeStatus::PROFILES_EXHAUSTED;
     state.ownerToken = 0;
     state.joinBudgetAnchorMs = 0;
     state.joinBudgetAnchorCursorGen = 0;
-    state.unsupportedUntil = now + MT_PROXY_PROBE_UNSUPPORTED_HOLD_MS;
+    state.profilesExhaustedUntil = now + MT_PROXY_PROBE_EXHAUSTED_HOLD_MS;
     state.generation++;
     pthread_mutex_unlock(&mtProxyProbeCoordinatorMutex);
 }
@@ -349,14 +351,16 @@ void MtProxyProbeCoordinator::reapExpired(int64_t now) {
             state.ownerToken = 0;
             state.joinBudgetAnchorMs = 0;
             state.joinBudgetAnchorCursorGen = 0;
-        } else if (state.status == ProbeStatus::UNSUPPORTED
-                && state.unsupportedUntil != 0 && state.unsupportedUntil <= now) {
+        } else if (state.status == ProbeStatus::PROFILES_EXHAUSTED
+                && state.profilesExhaustedUntil != 0 && state.profilesExhaustedUntil <= now) {
             state.status = ProbeStatus::IDLE;
             state.ownerToken = 0;
-            state.unsupportedUntil = 0;
+            state.profilesExhaustedUntil = 0;
+            state.cursor = MtProxyAdaptivePolicy::initialCursor(state.allowedSniVariants);
+            state.lastRecipeDiagnostic.clear();
         }
         // Bound map growth over a long session: erase a fully-dead entry that carries no useful
-        // state. WORKING recipes, active UNSUPPORTED quarantines, PROBING owners, and IDLE entries
+        // state. WORKING recipes, active profile-exhaustion holds, PROBING owners, and IDLE entries
         // that still hold recipe-ladder progress (cursor.generation > 0) are all preserved.
         if (state.status == ProbeStatus::IDLE
                 && state.ownerToken == 0

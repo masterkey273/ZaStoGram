@@ -11,8 +11,6 @@ final class ProxyHealthStore {
     private static final long PROXY_CHECK_CONNECTED_GRACE_MS = 60 * 1000L;
     private static final long INVALID_SECRET_FAILURE_BACKOFF_MS = 15 * 60 * 1000L;
     private static final long INVALID_SECRET_ROTATED_AWAY_HOLD_MS = 15 * 60 * 1000L;
-    private static final long UNSUPPORTED_CLIENT_FAILURE_BACKOFF_MS = 15 * 60 * 1000L;
-    private static final long UNSUPPORTED_CLIENT_ROTATED_AWAY_HOLD_MS = 15 * 60 * 1000L;
     private static final long USABLE_SUCCESS_HOLD_MS = 45 * 1000L;
     private static final long ROTATED_AWAY_HOLD_MS = 45 * 1000L;
     private static final long PUNITIVE_FAILURE_WINDOW_MS = 30 * 1000L;
@@ -327,9 +325,6 @@ final class ProxyHealthStore {
 
     private static long failureBackoffMs(String diagnostic, int consecutiveFailures) {
         String normalized = ProxyCheckDiagnostics.normalize(diagnostic);
-        if (ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT.equals(normalized)) {
-            return UNSUPPORTED_CLIENT_FAILURE_BACKOFF_MS;
-        }
         if (isInvalidSecretDiagnostic(normalized)) {
             return INVALID_SECRET_FAILURE_BACKOFF_MS;
         }
@@ -339,9 +334,6 @@ final class ProxyHealthStore {
 
     private static long rotatedAwayHoldMs(String diagnostic) {
         String normalized = ProxyCheckDiagnostics.normalize(diagnostic);
-        if (ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT.equals(normalized)) {
-            return UNSUPPORTED_CLIENT_ROTATED_AWAY_HOLD_MS;
-        }
         if (isInvalidSecretDiagnostic(normalized)) {
             return INVALID_SECRET_ROTATED_AWAY_HOLD_MS;
         }

@@ -16,7 +16,7 @@ public:
         StartOwner,
         JoinExisting,
         UseWorkingRecipe,
-        TerminalUnsupported,
+        ProfilesExhaustedBackoff,
     };
 
     struct ProbeKey {
@@ -68,7 +68,7 @@ public:
                                 bool recipeUsesGrease,
                                 const MtProxyAdaptivePolicy::CompatibilityRecipe &recipe,
                                 int64_t now);
-    static void completeUnsupported(const ProbeKey &probeKey, uint64_t callerToken, int64_t now);
+    static void completeProfilesExhausted(const ProbeKey &probeKey, uint64_t callerToken, int64_t now);
     static void cancelOwner(const ProbeKey &probeKey, uint64_t token);
     static void touchOwner(const ProbeKey &probeKey, uint64_t token, int64_t now);
     static void reapExpired(int64_t now);

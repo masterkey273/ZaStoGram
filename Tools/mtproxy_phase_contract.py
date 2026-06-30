@@ -84,7 +84,7 @@ PHASES = (
     MtProxyPhase("unrecognized_tls_response_after_client_hello", PHASE_FAILURE, native=False, java=True, analyzer=True, endpoint_key=ENDPOINT_EXACT),
     MtProxyPhase("server_hello_hmac_mismatch", PHASE_FAILURE, native=True, java=True, analyzer=True, endpoint_key=ENDPOINT_EXACT),
     MtProxyPhase("background_handshake_aborted", PHASE_FAILURE, native=True, java=True, analyzer=True, endpoint_key=ENDPOINT_EXACT),
-    MtProxyPhase("unsupported_for_current_client", PHASE_FAILURE, native=True, java=True, analyzer=True, reconnect_backoff=True, endpoint_key=ENDPOINT_EXACT),
+    MtProxyPhase("handshake_profiles_exhausted", PHASE_FAILURE, native=True, java=True, analyzer=True, reconnect_backoff=True, endpoint_key=ENDPOINT_EXACT, rotation=True),
     MtProxyPhase("mtproxy_packet_sent_no_response", PHASE_FAILURE, native=True, java=True, analyzer=True, reconnect_backoff=True, endpoint_key=ENDPOINT_EXACT, rotation=True),
     MtProxyPhase("post_handshake_no_appdata", PHASE_FAILURE, native=True, java=True, analyzer=True, reconnect_backoff=True, endpoint_key=ENDPOINT_EXACT, rotation=True),
     MtProxyPhase("dropped_early_after_appdata", PHASE_FAILURE, native=True, java=True, analyzer=True, reconnect_backoff=True, endpoint_key=ENDPOINT_NETWORK, rotation=True),

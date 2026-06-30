@@ -24,8 +24,6 @@ static constexpr int64_t MT_PROXY_ENDPOINT_MEDIA_NETWORK_COOLDOWN_MAX_MS = 5000;
 static constexpr int64_t MT_PROXY_ENDPOINT_HEAVY_NETWORK_COOLDOWN_MAX_MS = 9000;
 static constexpr int64_t MT_PROXY_ENDPOINT_INVALID_SECRET_COOLDOWN_MIN_MS = 15 * 60 * 1000;
 static constexpr int64_t MT_PROXY_ENDPOINT_INVALID_SECRET_COOLDOWN_JITTER_MS = 15 * 60 * 1000;
-static constexpr int64_t MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_MIN_MS = 15 * 60 * 1000;
-static constexpr int64_t MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_JITTER_MS = 15 * 60 * 1000;
 static constexpr int64_t MT_PROXY_ENDPOINT_USABLE_SUCCESS_HOLD_MS = 45 * 1000;
 
 struct MtProxyEndpointResilienceState {
@@ -81,9 +79,6 @@ static uint32_t endpointSecureRandomBounded(uint32_t bound) {
 
 static int64_t cooldownMs(MtProxyEndpointResilienceState &state, const std::string &diagnostic, int32_t mode, int32_t priority) {
     mode = normalizeMtProxyConnectionPatternOption(mode);
-    if (diagnostic == "unsupported_for_current_client") {
-        return MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_MIN_MS + endpointSecureRandomBounded((uint32_t) MT_PROXY_ENDPOINT_UNSUPPORTED_COOLDOWN_JITTER_MS);
-    }
     if (diagnostic == "secret_parse_invalid_domain_control_char" || diagnostic == "secret_parse_invalid_domain") {
         return MT_PROXY_ENDPOINT_INVALID_SECRET_COOLDOWN_MIN_MS + endpointSecureRandomBounded((uint32_t) MT_PROXY_ENDPOINT_INVALID_SECRET_COOLDOWN_JITTER_MS);
     }
@@ -167,7 +162,7 @@ static bool failureCanBeShadowedBySuccess(const std::string &diagnostic) {
             || diagnostic == "unrecognized_response_after_client_hello"
             || diagnostic == "unrecognized_tls_response_after_client_hello"
             || diagnostic == "server_hello_hmac_mismatch"
-            || diagnostic == "unsupported_for_current_client"
+            || diagnostic == "handshake_profiles_exhausted"
             || diagnostic == "mtproxy_packet_sent_no_response"
             || diagnostic == "post_handshake_no_appdata";
 }
@@ -267,7 +262,7 @@ bool MtProxyEndpointPolicy::failureNeedsCooldown(const std::string &diagnostic) 
            || diagnostic == "tcp_connected_no_pong"
            || diagnostic == "secret_parse_invalid_domain_control_char"
            || diagnostic == "secret_parse_invalid_domain"
-           || diagnostic == "unsupported_for_current_client"
+           || diagnostic == "handshake_profiles_exhausted"
            || diagnostic == "mtproxy_packet_sent_no_response"
            || diagnostic == "post_handshake_no_appdata"
            || diagnostic == "dropped_early_after_appdata";

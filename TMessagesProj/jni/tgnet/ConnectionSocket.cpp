@@ -2911,10 +2911,10 @@ bool ConnectionSocket::mtProxyProbeBeginOrJoin(bool ipv6) {
     probeKey.networkEndpointKey = currentMtProxyNetworkEndpointKey;
     probeKey.allowedSniVariants = currentAllowedSniVariants;
     MtProxyProbeCoordinator::Decision probeDecision = MtProxyProbeCoordinator::beginOrJoin(probeKey, mtProxyProbeOwnerToken, now);
-    if (probeDecision.kind == MtProxyProbeCoordinator::DecisionKind::TerminalUnsupported) {
-        proxyCheckDiagnostic = "unsupported_for_current_client";
+    if (probeDecision.kind == MtProxyProbeCoordinator::DecisionKind::ProfilesExhaustedBackoff) {
+        proxyCheckDiagnostic = "handshake_profiles_exhausted";
         publishProxyConnectionStage(proxyCheckDiagnostic.c_str());
-        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup probe_terminal_unsupported key=%s endpoint=%s owner_generation=%u", this, currentMtProxyProbeKey.c_str(), currentMtProxyEndpointKey.c_str(), probeDecision.generation);
+        if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup probe_profiles_exhausted key=%s endpoint=%s owner_generation=%u", this, currentMtProxyProbeKey.c_str(), currentMtProxyEndpointKey.c_str(), probeDecision.generation);
         closeSocket(1, -1);
         return true;
     }
@@ -3100,11 +3100,11 @@ void ConnectionSocket::recordMtProxyEndpointFailure(const char *diagnostic, cons
         if (!failure.recorded) {
             return;
         }
-        std::string nextRecipeId = failure.recipeExhausted ? "unsupported_for_current_client" : mtProxyRecipeIdForCursor(failure.cursor);
+        std::string nextRecipeId = failure.recipeExhausted ? "handshake_profiles_exhausted" : mtProxyRecipeIdForCursor(failure.cursor);
         bool fallbackAllowed = !failure.recipeExhausted || mtProxyClassicFallbackAllowed();
         if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup recipe_failed key=%s recipe_key=%s endpoint_key=%s phase=%s reason=%s recipe=%s recipe_id=%s family=%s sni_variant=%s parser_variant=%s classic_variant=%s next=%s next_recipe=%s next_family=%s next_sni_variant=%s next_parser_variant=%s next_classic_variant=%s fallback_allowed=%d classic_fallback_allowed=%d exhausted=%d owner_generation=%u cursor_generation=%u", this, currentMtProxyEndpointKey.c_str(), currentMtProxyProbeKey.c_str(), currentMtProxyEndpointKey.c_str(), phase.c_str(), reason != nullptr ? reason : "unknown", failedRecipeId.c_str(), failedRecipeId.c_str(), MtProxyAdaptivePolicy::clientHelloFamilyName(failedCursor.family), MtProxyAdaptivePolicy::sniVariantName(failedCursor.sniVariant), MtProxyAdaptivePolicy::parserVariantName(failedCursor.parserVariant), MtProxyAdaptivePolicy::classicVariantName(failedCursor.classicVariant), nextRecipeId.c_str(), nextRecipeId.c_str(), MtProxyAdaptivePolicy::clientHelloFamilyName(failure.cursor.family), MtProxyAdaptivePolicy::sniVariantName(failure.cursor.sniVariant), MtProxyAdaptivePolicy::parserVariantName(failure.cursor.parserVariant), MtProxyAdaptivePolicy::classicVariantName(failure.cursor.classicVariant), fallbackAllowed ? 1 : 0, mtProxyClassicFallbackAllowed() ? 1 : 0, failure.recipeExhausted ? 1 : 0, failure.generation, failure.cursor.generation);
         if (failure.recipeExhausted) {
-            proxyCheckDiagnostic = "unsupported_for_current_client";
+            proxyCheckDiagnostic = "handshake_profiles_exhausted";
             publishProxyConnectionStage(proxyCheckDiagnostic.c_str());
             MtProxyEndpointPolicy::MtProxyEndpointContext context;
             context.endpointKey = currentMtProxyEndpointKey;
@@ -3114,7 +3114,7 @@ void ConnectionSocket::recordMtProxyEndpointFailure(const char *diagnostic, cons
             context.connectionPatternMode = connectionPatternMode;
             context.priority = proxyHandshakeAdmissionPriority;
             MtProxyEndpointPolicy::FailureResult exhaustedFailure = MtProxyEndpointPolicy::recordFailure(context, proxyCheckDiagnostic, now);
-            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup recipe_exhausted key=%s recipe_key=%s failed_phase=%s next=unsupported_for_current_client unsupported_recorded=%d cooldown_ms=%ld cached_family=%s cached_sni_variant=%s cached_parser_variant=%s cached_classic_variant=%s classic_fallback_allowed=%d generation=%u", this, currentMtProxyEndpointKey.c_str(), currentMtProxyProbeKey.c_str(), phase.c_str(), exhaustedFailure.recorded ? 1 : 0, (long) exhaustedFailure.cooldownMs, MtProxyAdaptivePolicy::clientHelloFamilyName(failure.cachedCursor.family), MtProxyAdaptivePolicy::sniVariantName(failure.cachedCursor.sniVariant), MtProxyAdaptivePolicy::parserVariantName(failure.cachedCursor.parserVariant), MtProxyAdaptivePolicy::classicVariantName(failure.cachedCursor.classicVariant), mtProxyClassicFallbackAllowed() ? 1 : 0, failure.generation);
+            if (LOGS_ENABLED) DEBUG_D("connection(%p) mtproxy_startup recipe_exhausted key=%s recipe_key=%s failed_phase=%s next=handshake_profiles_exhausted exhausted_recorded=%d cooldown_ms=%ld cached_family=%s cached_sni_variant=%s cached_parser_variant=%s cached_classic_variant=%s classic_fallback_allowed=%d generation=%u", this, currentMtProxyEndpointKey.c_str(), currentMtProxyProbeKey.c_str(), phase.c_str(), exhaustedFailure.recorded ? 1 : 0, (long) exhaustedFailure.cooldownMs, MtProxyAdaptivePolicy::clientHelloFamilyName(failure.cachedCursor.family), MtProxyAdaptivePolicy::sniVariantName(failure.cachedCursor.sniVariant), MtProxyAdaptivePolicy::parserVariantName(failure.cachedCursor.parserVariant), MtProxyAdaptivePolicy::classicVariantName(failure.cachedCursor.classicVariant), mtProxyClassicFallbackAllowed() ? 1 : 0, failure.generation);
         }
         return;
     }
@@ -3967,18 +3967,17 @@ std::string ConnectionSocket::deriveMtProxyTerminalDiagnostic(int32_t reason, in
     if (!isCurrentMtProxyConnection() || reason == 0) {
         return proxyCheckDiagnostic;
     }
-    // Terminal diagnostics decided pre-I/O (before the socket connects) must survive the close path.
+    // Diagnostics decided pre-I/O (before the socket connects) must survive the close path.
     // deriveMtProxyTerminalDiagnostic would otherwise re-derive them from the startup timeline as
     // "connection_not_started" (startupActive is true because the socket never connected), which is on
     // the local-scheduler-timeout skip list -> records neither an endpoint cooldown nor a reconnect
-    // hold. unsupported_for_current_client is the pre-flight TerminalUnsupported reject in
-    // mtProxyProbeBeginOrJoin: preserving it lets the existing endpoint cooldown + reconnect backoff
-    // engage instead of a zero-delay reconnect hot loop against an already-quarantined proxy.
+    // hold. handshake_profiles_exhausted can be decided by mtProxyProbeBeginOrJoin before a socket is
+    // opened, so preserving it lets endpoint cooldown + reconnect backoff engage instead of a hot loop.
     if (proxyCheckDiagnostic == "secret_parse_invalid_domain_control_char"
             || proxyCheckDiagnostic == "secret_parse_invalid_domain"
             || proxyCheckDiagnostic == "dns_negative_cache_hit"
             || proxyCheckDiagnostic == "dns_blocked_zero_address"
-            || proxyCheckDiagnostic == "unsupported_for_current_client") {
+            || proxyCheckDiagnostic == "handshake_profiles_exhausted") {
         return proxyCheckDiagnostic;
     }
     bool startupActive = startupTimeline.hasLocalWait()

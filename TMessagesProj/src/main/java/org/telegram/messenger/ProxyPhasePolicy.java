@@ -44,7 +44,7 @@ public final class ProxyPhasePolicy {
             case ProxyCheckDiagnostics.TCP_CONNECTED_NO_PONG:
             case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
             case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN:
-            case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:
+            case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:
             case ProxyCheckDiagnostics.MTPROXY_PACKET_SENT_NO_RESPONSE:
             case ProxyCheckDiagnostics.POST_HANDSHAKE_NO_APPDATA:
             case ProxyCheckDiagnostics.DROPPED_EARLY_AFTER_APPDATA:
@@ -83,7 +83,6 @@ public final class ProxyPhasePolicy {
 
     public static boolean isOneShotTerminal(String phase) {
         switch (ProxyCheckDiagnostics.normalize(phase)) {
-            case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:
             case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN_CONTROL_CHAR:
             case ProxyCheckDiagnostics.SECRET_PARSE_INVALID_DOMAIN:
                 return true;
@@ -182,8 +181,8 @@ public final class ProxyPhasePolicy {
             case ProxyCheckDiagnostics.BACKGROUND_HANDSHAKE_ABORTED:
                 return failure(KeyScope.EXACT, false, false);
 
-            case ProxyCheckDiagnostics.UNSUPPORTED_FOR_CURRENT_CLIENT:
-                return terminalExactFailure();
+            case ProxyCheckDiagnostics.HANDSHAKE_PROFILES_EXHAUSTED:
+                return failure(KeyScope.EXACT, true, true);
 
             case ProxyCheckDiagnostics.MTPROXY_PACKET_SENT_NO_RESPONSE:
             case ProxyCheckDiagnostics.POST_HANDSHAKE_NO_APPDATA:

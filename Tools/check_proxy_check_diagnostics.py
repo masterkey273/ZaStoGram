@@ -113,9 +113,14 @@ def main():
     failure_verdicts_match = re.search(r"FAKETLS_FAILURE_VERDICTS = \{(?P<body>.*?)\n\}", analyzer, re.S)
     require(failure_verdicts_match is not None, "analyzer must expose explicit FakeTLS failure verdicts")
     analyzer_failure_verdicts = set(re.findall(r'"([a-z0-9_]+)"', failure_verdicts_match.group("body")))
+    legacy_analyzer_aliases = {"unsupported_for_current_client"}
     require(
-        analyzer_failure_verdicts == analyzer_failure_phases(),
-        "analyzer FakeTLS failure verdicts must match mtproxy_phase_contract: " + ", ".join(sorted(analyzer_failure_verdicts ^ analyzer_failure_phases())),
+        analyzer_failure_verdicts - legacy_analyzer_aliases == analyzer_failure_phases(),
+        "analyzer FakeTLS failure verdicts must match mtproxy_phase_contract except legacy aliases: " + ", ".join(sorted((analyzer_failure_verdicts - legacy_analyzer_aliases) ^ analyzer_failure_phases())),
+    )
+    require(
+        legacy_analyzer_aliases <= analyzer_failure_verdicts and "legacy alias" in analyzer,
+        "analyzer must document legacy FakeTLS failure aliases separately from the active phase contract",
     )
     require("-1001" not in combined and "-1002" not in combined, "diagnostics must not use magic negative IDs")
     require(
